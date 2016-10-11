@@ -2367,10 +2367,15 @@ out:
 #ifdef CONFIG_PM
 
 extern void eschc_cd_enable (struct sdhci_host *host, bool enable);
+extern int gSleep_Mode_Suspend;
 int sdhci_suspend_host(struct sdhci_host *host, pm_message_t state)
 {
 	int ret;
 
+	if (!gSleep_Mode_Suspend && (MMC_CAP_NONREMOVABLE & host->mmc->caps)) {
+		printk (KERN_DEBUG"skip mmc %d suspend. (caps %X) \n",host->mmc->index, host->mmc->caps);
+		return 0;
+	}
 	sdhci_enable_clk(host);
 	sdhci_disable_card_detection(host);
 
@@ -2406,6 +2411,11 @@ EXPORT_SYMBOL_GPL(sdhci_suspend_host);
 int sdhci_resume_host(struct sdhci_host *host)
 {
 	int ret;
+
+	if (!gSleep_Mode_Suspend && (MMC_CAP_NONREMOVABLE & host->mmc->caps)) {
+		printk (KERN_DEBUG"skip mmc %d resume.\n",host->mmc->index);
+		return 0;
+	}
 
 	if (host->vmmc) {
 		ret = regulator_enable(host->vmmc);

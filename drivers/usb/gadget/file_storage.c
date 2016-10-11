@@ -527,6 +527,7 @@ struct fsg_dev {
 #include "fsl_updater.h"
 #endif
 
+static int do_set_interface(struct fsg_dev *fsg, int altsetting);
 typedef void (*fsg_routine_t)(struct fsg_dev *);
 
 static int exception_in_progress(struct fsg_dev *fsg)
@@ -705,6 +706,14 @@ static void fsg_disconnect(struct usb_gadget *gadget)
 	struct fsg_dev		*fsg = get_gadget_data(gadget);
 
 	DBG(fsg, "disconnect or port reset\n");
+	/*
+	 * The disconnect exception will call do_set_config, and therefore will
+	 * visit controller registers. However it is a delayed event, and will be
+	 * handled at another process, so the controller maybe have already closed the
+	 * usb clock.
+	 */
+	if (fsg->new_config)
+		do_set_interface(fsg, -1);/* disable the interface */
 	raise_exception(fsg, FSG_STATE_DISCONNECT);
 }
 
@@ -3362,6 +3371,7 @@ static int __init check_parameters(struct fsg_dev *fsg)
 
 #endif /* CONFIG_USB_FILE_STORAGE_TEST */
 
+#if 0 //[ 
 	/* Serial string handling.
 	 * On a real device, the serial string would be loaded
 	 * from permanent storage. */
@@ -3396,6 +3406,7 @@ static int __init check_parameters(struct fsg_dev *fsg)
  no_serial:
 		device_desc.iSerialNumber = 0;
 	}
+#endif //]
 
 	return 0;
 }
@@ -3609,6 +3620,8 @@ static int __ref fsg_bind(struct usb_gadget *gadget)
 		sprintf(&fsg_string_serial[i], "%02X", c);
 	}
 	}
+	fsg_strings[FSG_STRING_SERIAL - 1].s = fsg_string_serial;
+	device_desc.iSerialNumber = FSG_STRING_SERIAL;
 	printk ("[%s-%d] mfg = %s , SN = %s\n",__func__, __LINE__, fsg_string_manufacturer, fsg_string_serial);
 
 	fsg->thread_task = kthread_create(fsg_main_thread, fsg,

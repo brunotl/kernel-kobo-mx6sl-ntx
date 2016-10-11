@@ -26,6 +26,8 @@
 #include <linux/workqueue.h>
 #include <linux/gpio.h>
 
+#include "gpiofn.h"
+
 struct gpio_button_data {
 	struct gpio_keys_button *button;
 	struct input_dev *input;
@@ -504,9 +506,12 @@ fail2:
 
 static int gpio_keys_open(struct input_dev *input)
 {
+	int iRet;
 	struct gpio_keys_drvdata *ddata = input_get_drvdata(input);
 
-	return ddata->enable ? ddata->enable(input->dev.parent) : 0;
+	iRet = ddata->enable ? ddata->enable(input->dev.parent) : 0;
+	gpiofn_rechk();
+	return iRet;
 }
 
 static void gpio_keys_close(struct input_dev *input)
@@ -587,6 +592,8 @@ static int __devinit gpio_keys_probe(struct platform_device *pdev)
 	input_set_capability(input, EV_KEY, KEY_F1);
 
 	input_set_capability(input, EV_SW, SW_LID);
+	input_set_capability(input, EV_SW, SW_HEADPHONE_INSERT);
+	input_set_capability(input, EV_MSC,MSC_RAW);
 
 	error = sysfs_create_group(&pdev->dev.kobj, &gpio_keys_attr_group);
 	if (error) {
@@ -661,14 +668,23 @@ extern int gSleep_Mode_Suspend;
 static int gpio_keys_suspend(struct device *dev)
 {
 	struct platform_device *pdev = to_platform_device(dev);
+	struct gpio_keys_drvdata *ddata = platform_get_drvdata(pdev);
 	struct gpio_keys_platform_data *pdata = pdev->dev.platform_data;
 	int i;
 
-	if (device_may_wakeup(&pdev->dev) && !gSleep_Mode_Suspend) {
+	if (device_may_wakeup(&pdev->dev)) {
 		for (i = 0; i < pdata->nbuttons; i++) {
 			struct gpio_keys_button *button = &pdata->buttons[i];
 			if (button->wakeup) {
 				int irq = gpio_to_irq(button->gpio);
+				if (gSleep_Mode_Suspend && (KEY_POWER != button->code)) {
+					free_irq(irq, &ddata->data[i]);
+					if (ddata->data[i].timer_debounce)
+						del_timer_sync(&ddata->data[i].timer);
+					cancel_work_sync(&ddata->data[i].work);
+					gpio_free(pdata->buttons[i].gpio);
+					continue;
+				}
 				enable_irq_wake(irq);
 			}
 		}
@@ -684,13 +700,16 @@ static int gpio_keys_resume(struct device *dev)
 	struct gpio_keys_platform_data *pdata = pdev->dev.platform_data;
 	int i;
 	
-	if (gSleep_Mode_Suspend)
-		return 0;
 	for (i = 0; i < pdata->nbuttons; i++) {
 
 		struct gpio_keys_button *button = &pdata->buttons[i];
+		struct gpio_button_data *bdata = &ddata->data[i];
 		if (button->wakeup && device_may_wakeup(&pdev->dev)) {
 			int irq = gpio_to_irq(button->gpio);
+			if (gSleep_Mode_Suspend && (KEY_POWER != button->code)) {
+				gpio_keys_setup_key(pdev, bdata, button);
+				continue;
+			}
 			disable_irq_wake(irq);
 		}
 

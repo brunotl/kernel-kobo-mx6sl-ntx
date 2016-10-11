@@ -50,7 +50,6 @@ struct ntx_misc_platform_data *ntx_misc;
 #define NTX_ACIN_PG 		(gpio_get_value (ntx_misc->acin_gpio)?0:1)
 
 struct i2c_client *g_up_i2c_client;
-static unsigned short gw_uP_version;
 extern int g_wakeup_by_alarm;
 
 static unsigned long gdwLastRTCReadTick;
@@ -58,20 +57,88 @@ static volatile int giIsSuspending=0;
 static struct rtc_time gtLastRTCtm;
 static struct regulator *g_fl_regulator;
 
-void msp430_fl_enable (int isEnable)
+void fl_regulator_enable (int isEnable)
 {
 	static int s_is_enabled;
 	if (g_fl_regulator && (s_is_enabled != isEnable)) {
 		s_is_enabled = isEnable;
-		printk ("[%s-%d] regulator %s\n",__func__,__LINE__,(isEnable)?"on":"off");
-		if (isEnable) {
-  			regulator_enable (g_fl_regulator);
+		printk ("[%s-%d] regulator %d\n",__func__,__LINE__,isEnable);
+		if (1==isEnable||2==isEnable) {
+  		regulator_enable (g_fl_regulator);
+			if(1==isEnable) {
   			msleep (200);
-  		}
-		else
-  			regulator_disable (g_fl_regulator);
+			}
+  	}
+		else if(0==isEnable) {
+  		regulator_disable (g_fl_regulator);
+		}
 	}
 }
+static DEFINE_SEMAPHORE(msp430_cmd_lockobj);
+static int giMSP430_lock_id=-1;
+int up_cmd_lock(int iLockID)
+{
+	int iWaitLockId ;
+	int iIsAtomic=in_atomic();
+	int iIsInterrupt=in_interrupt();
+	int iIsSuspend=giIsSuspending;
+	int iChk;
+	
+
+	iWaitLockId = giMSP430_lock_id;
+
+
+	if(iIsAtomic) {
+		return 1;
+	}
+
+	if(iIsInterrupt) {
+		return 2;
+	}
+
+	if(iIsSuspend) {
+		return 3;
+	}
+
+	if(iWaitLockId>=0) {
+		printk("msp430 try lock (%d) ,but locked (%d),atomic=%d,interrupt=%d,suspend=%d\n",
+				iLockID,iWaitLockId,iIsAtomic,iIsInterrupt,iIsSuspend);
+	}
+
+	iChk = down_interruptible(&msp430_cmd_lockobj);
+
+	if(iWaitLockId>=0) {
+		printk("%d unlocked\n",iWaitLockId);
+	}
+
+#if 0
+	if(0!=iChk) {
+		printk("%s interrupted !!\n",__FUNCTION__);
+		return -4;
+	}
+#else
+	if(0!=iChk) {
+		printk("%s interrupted !!\n",__FUNCTION__);
+		return 4;
+	}
+#endif
+
+	giMSP430_lock_id=iLockID;
+
+	return 0;
+}
+
+int up_cmd_unlock(void)
+{
+
+	if(giMSP430_lock_id>=0) {
+		giMSP430_lock_id=-1;
+		up(&msp430_cmd_lockobj);
+	}
+
+	return 0;
+}
+
 
 int up_read_reg(unsigned char reg)
 {
@@ -85,11 +152,6 @@ int up_read_reg(unsigned char reg)
 		iSkipI2CTransfer = 1;
 	}
 
-	if(giIsSuspending) {
-		printk("%s():skipped read reg0x%02X because of suspending !\n",
-				__FUNCTION__,reg);
-		iSkipI2CTransfer = 1;
-	}
 
 	if(iSkipI2CTransfer) {
 		return -1;
@@ -111,6 +173,20 @@ int up_read_reg(unsigned char reg)
 	return ((buffer[0]<<8) | buffer[1]);
 }
 
+int up_safe_read_reg(unsigned char reg)
+{
+	int iRet;
+	int iChk;
+	iChk = up_cmd_lock(__LINE__);
+	if(iChk<0) {
+		printk("[warning] %s(%d) skipped errorno(%d) \n",__FUNCTION__,__LINE__,iChk);
+		return 0;
+	}
+	iRet = up_read_reg(reg);
+	up_cmd_unlock();
+	return iRet;
+}
+
 int up_write_reg(unsigned char reg, int value)
 {
 	int iRet;
@@ -123,11 +199,6 @@ int up_write_reg(unsigned char reg, int value)
 		iSkipI2CTransfer = 1;
 	}
 
-	if(giIsSuspending) {
-		printk("%s():skipped write reg0x%02X<==%x because of suspending !\n",
-				__FUNCTION__,reg,value);
-		iSkipI2CTransfer = 1;
-	}
 
 	if(iSkipI2CTransfer) {
 		return -EAGAIN;
@@ -154,24 +225,38 @@ int up_write_reg(unsigned char reg, int value)
 	return iRet;
 }
 
+int up_safe_write_reg(unsigned char reg, int value)
+{
+	int iRet;
+	int iChk;
+	iChk = up_cmd_lock(__LINE__);
+	if(iChk<0) {
+		printk("[warning] %s(%d) skipped errorno(%d) \n",__FUNCTION__,__LINE__,iChk);
+		return -EIO;
+	}
+	iRet = up_write_reg(reg,value);
+	up_cmd_unlock();
+	return iRet;
+}
 
 int up_get_time(struct rtc_time *tm)
 {
   unsigned int tmp;
 	int iSkip_Read_RTC_from_I2C = 0;
+	int iChk;
 
-#if 0
+#if 1
 	if(time_before(jiffies,gdwLastRTCReadTick)) {
-		iSkip_Read_RTC_from_I2C = 1;
+		iSkip_Read_RTC_from_I2C = 2;
 	}
+	else
 #endif
-
 	if(giIsSuspending) {
 		iSkip_Read_RTC_from_I2C = 1;
 	}
 
 	if(iSkip_Read_RTC_from_I2C) {
-		printk("%s : skipped frequently RTC read from I2C !\n",__FUNCTION__);
+		printk("%s : read RTC from cache (%d)!\n",__FUNCTION__,iSkip_Read_RTC_from_I2C);
 		tm->tm_year = gtLastRTCtm.tm_year;
 		tm->tm_mon = gtLastRTCtm.tm_mon;
 		tm->tm_mday = gtLastRTCtm.tm_mday;
@@ -182,6 +267,13 @@ int up_get_time(struct rtc_time *tm)
 	}
 
 	gdwLastRTCReadTick=jiffies+(HZ/2);
+
+	iChk = up_cmd_lock(__LINE__);
+	if(iChk<0) {
+		printk("[warning] %s(%d) skipped errorno(%d) \n",__FUNCTION__,__LINE__,iChk);
+		return 0;
+	}
+	
    	tmp = up_read_reg (0x20);
 	tm->tm_year = ((tmp >> 8) & 0x0FF)+100;
 	tm->tm_mon = (tmp & 0x0FF)-1;
@@ -191,6 +283,7 @@ int up_get_time(struct rtc_time *tm)
 	tmp = up_read_reg (0x23);
 	tm->tm_min = (tmp >> 8) & 0x0FF;
 	tm->tm_sec = tmp & 0x0FF;
+	up_cmd_unlock();
 
 	gtLastRTCtm.tm_year = tm->tm_year;
 	gtLastRTCtm.tm_mon = tm->tm_mon;
@@ -205,16 +298,20 @@ EXPORT_SYMBOL_GPL(up_get_time);
 
 int up_set_time(struct rtc_time *tm)
 {
-	if(giIsSuspending) {
+	int iChk;
+	iChk = up_cmd_lock(__LINE__);
+	if(iChk<0) {
+		printk("[warning] %s(%d) skipped errorno(%d) \n",__FUNCTION__,__LINE__,iChk);
 		return -1;
 	}
-
 	up_write_reg (0x10, ((tm->tm_year-100)<<8));
 	up_write_reg (0x11, ((tm->tm_mon+1)<<8));
 	up_write_reg (0x12, (tm->tm_mday<<8));
 	up_write_reg (0x13, (tm->tm_hour<<8));
 	up_write_reg (0x14, (tm->tm_min<<8));
 	up_write_reg (0x15, (tm->tm_sec<<8));
+	up_cmd_unlock();
+	gdwLastRTCReadTick = jiffies;
 	
 	return 0;
 }
@@ -234,11 +331,19 @@ int up_set_alarm(struct rtc_time *tm)
 {
 	struct rtc_time now_tm;
 	unsigned long now, time;
+	int iChk;
 
 	if (!tm) {
+
+		iChk = up_cmd_lock(__LINE__);
+		if(iChk<0) {
+			printk("[warning] %s(%d) skipped errorno(%d) \n",__FUNCTION__,__LINE__,iChk);
+			return -1;
+		}
 		printk ("[%s-%d] Disable alarm.\n", __func__, __LINE__);
 		up_write_reg (0x1B, 0);
 		up_write_reg (0x1C, 0);
+		up_cmd_unlock();
 		return 0;
 	}
 	
@@ -250,17 +355,33 @@ int up_set_alarm(struct rtc_time *tm)
 	if(time > now) {
 		int interval = time-now;
 		printk ("[%s-%d] alarm %d\n",__func__,__LINE__,interval);
+		iChk = up_cmd_lock(__LINE__);
+		if(iChk<0) {
+			printk("[warning] %s(%d) skipped errorno(%d) \n",__FUNCTION__,__LINE__,iChk);
+			return -1;
+		}
 		up_write_reg (0x1B, (interval&0xFF00));
 		up_write_reg (0x1C, ((interval<<8)& 0xFF00));
+		up_cmd_unlock();
 	}
 	else {
-		int tmp = up_read_reg (0x60);
+		int tmp;
+
+		iChk = up_cmd_lock(__LINE__);
+		if(iChk<0) {
+			printk("[warning] %s(%d) skipped errorno(%d) \n",__FUNCTION__,__LINE__,iChk);
+			return -1;
+		}
+		
+		tmp = up_read_reg (0x60);
 		if (tmp & 0x8000) {
 			printk ("[%s-%d] =================> Micro P MSP430 alarm triggered <===================\n", __func__, __LINE__);
 			g_wakeup_by_alarm = 1;
 		}
 		up_write_reg (0x1B, 0);
 		up_write_reg (0x1C, 0);
+
+		up_cmd_unlock();
 	}
 	return 0;
 }
@@ -268,12 +389,15 @@ EXPORT_SYMBOL_GPL(up_set_alarm);
 
 unsigned short msp430_deviceid(void)
 {
-	static unsigned short gw_uP_version;
+	static unsigned short gw_uP_version = 0;
+	int iChk;
 
 	if(0==gw_uP_version) {
-		gw_uP_version = up_read_reg(0);
+		iChk = up_safe_read_reg(0);
+		if(iChk>=0) {
+			gw_uP_version = (unsigned short)(iChk);
+		}
 	}
-
 	return gw_uP_version;
 }
 
@@ -289,7 +413,7 @@ void msp430_power_off(void)
 {
    	while (1) {
 		printk("Kernel--- Power Down ---\n");
-		up_write_reg (0x50, 0x0100);
+		up_safe_write_reg (0x50, 0x0100);
       	msleep(1400);
 	}
 }
@@ -298,11 +422,265 @@ void msp430_pm_restart(void)
 {
    	while (1) {
 		printk("Kernel--- restart ---\n");
-		up_write_reg (0x90, 0xff00);
+		up_safe_write_reg (0x90, 0xff00);
 
       	msleep(1400);
 	}
 }
+
+#define UNKNOW_FL_ENABLE_STATE 0x0000
+static unsigned short gwMSP430_fl_enable_state=UNKNOW_FL_ENABLE_STATE;
+static volatile int giMSP430_FL_W_idx=0; // FL white control index .
+static volatile unsigned char gbMSP430_RegFLW_dutyL=0xA6,gbMSP430_RegFLW_dutyH=0xA7;
+static volatile int giFLW_duty=-1,giFLW_dutyMin=1,giFLW_dutyMax=400;
+static volatile int giFLR_duty=-1,giFLR_dutyMin=1,giFLR_dutyMax=400;
+static volatile int giFLW_freq=-1,giFLW_freqMin=1,giFLW_freqMax=8000000;
+int msp430_fl_enable(int iColorIDX,int iIsEnable)
+{
+	int iRet = 0;
+	unsigned short wSetState = 0;
+	int i;
+
+	printk("%s(%d,%d)\n",__FUNCTION__,iColorIDX,iIsEnable);
+
+	wSetState = gwMSP430_fl_enable_state;
+	if((MSP430_FL_IDX_ALL==iColorIDX)||(MSP430_FL_IDX_W==iColorIDX)) {
+		if(iIsEnable) {
+			wSetState |= (0x0100<<giMSP430_FL_W_idx);
+		}
+		else {
+			wSetState &= ~(0x0100<<giMSP430_FL_W_idx);
+		}
+	}
+	if(4==gptHWCFG->m_val.bFL_PWM) {
+		if((MSP430_FL_IDX_ALL==iColorIDX)||(MSP430_FL_IDX_R==iColorIDX)) {
+			if(iIsEnable) {
+				wSetState |= (0x0100<<0);
+			}
+			else {
+				wSetState &= ~(0x0100<<0);
+			}
+		}
+	}
+	if( wSetState != gwMSP430_fl_enable_state ) {
+		printk("msp430 fl enable 0x%04x\n",wSetState);
+		up_safe_write_reg (0xA3, wSetState);
+		gwMSP430_fl_enable_state = wSetState;
+	}
+	return iRet;
+}
+int msp430_fl_is_enable(int iColorIDX)
+{
+	int iRet=-1;
+	unsigned short wCompState ;
+	if(MSP430_FL_IDX_W==iColorIDX) {
+		wCompState = (0x0100<<giMSP430_FL_W_idx);
+		iRet = (gwMSP430_fl_enable_state&wCompState) ? 1 : 0;
+	}
+	else if(MSP430_FL_IDX_R==iColorIDX) {
+		if(4==gptHWCFG->m_val.bFL_PWM) {
+			wCompState = (0x0100<<0);
+			iRet = (gwMSP430_fl_enable_state&wCompState) ? 1 : 0;
+		}
+	}
+	return iRet;
+}
+
+
+
+int msp430_fl_set_duty(int iColorIDX,int iDuty)
+{
+	int iChk;
+	int iRet=-1;
+
+	iChk = up_cmd_lock(__LINE__);
+	if(iChk<0) {
+		printk("[warning] %s(%d) skipped errorno(%d) \n",__FUNCTION__,__LINE__,iChk);
+		return -2;
+	}
+
+	do {
+		if((MSP430_FL_IDX_ALL==iColorIDX)||(MSP430_FL_IDX_W==iColorIDX)) {
+			if(iDuty<giFLW_dutyMin) {
+				iRet = -3;
+				break;
+			}
+			if(iDuty>giFLW_dutyMax) {
+				iRet = -4;
+				break;
+			}
+			iChk = up_write_reg (gbMSP430_RegFLW_dutyH, iDuty&0xFF00);
+			iChk = up_write_reg (gbMSP430_RegFLW_dutyL, iDuty<<8);
+			giFLW_duty = iDuty;
+			iRet = 0;
+		}
+
+		if(4==gptHWCFG->m_val.bFL_PWM) {
+			if((MSP430_FL_IDX_ALL==iColorIDX)||(MSP430_FL_IDX_R==iColorIDX)) {
+				if(iDuty<giFLR_dutyMin) {
+					iRet = -5;
+					break;
+				}
+				if(iDuty>giFLR_dutyMax) {
+					iRet = -6;
+					break;
+				}
+				iChk = up_write_reg (0xA7, iDuty&0xFF00);
+				iChk = up_write_reg (0xA6, iDuty<<8);
+				giFLR_duty = iDuty;
+				iRet = 0;
+			}
+		}
+	}while(0);
+
+	up_cmd_unlock();
+
+	return iRet;
+}
+
+int msp430_fl_get_duty(int iColorIDX)
+{
+	int iRet=-1;
+	if(MSP430_FL_IDX_W==iColorIDX) {
+		iRet = giFLW_duty;
+	}
+	else if(MSP430_FL_IDX_R==iColorIDX) {
+		iRet = giFLR_duty;
+	}
+	return iRet;
+}
+int msp430_fl_get_duty_max(int iColorIDX)
+{
+	int iRet=-1;
+	if(MSP430_FL_IDX_W==iColorIDX) {
+		iRet = giFLW_dutyMax;
+	}
+	else if(MSP430_FL_IDX_R==iColorIDX) {
+		iRet = giFLR_dutyMax;
+	}
+	return iRet;
+}
+int msp430_fl_get_duty_min(int iColorIDX)
+{
+	int iRet=-1;
+	if(MSP430_FL_IDX_W==iColorIDX) {
+		iRet = giFLW_dutyMin;
+	}
+	else if(MSP430_FL_IDX_R==iColorIDX) {
+		iRet = giFLR_dutyMin;
+	}
+	return iRet;
+}
+
+
+int msp430_fl_set_freq(int iColorIDX,int iFreq)
+{
+	int iChk;
+	int iRet=-1;
+
+	unsigned char bFreqRegHi=0xA5;
+	unsigned char bFreqRegLo=0xA4;
+
+	iChk = up_cmd_lock(__LINE__);
+	if(iChk<0) {
+		printk("[warning] %s(%d) skipped errorno(%d) \n",__FUNCTION__,__LINE__,iChk);
+		return -2;
+	}
+
+	do {
+		if((MSP430_FL_IDX_ALL==iColorIDX)||(MSP430_FL_IDX_W==iColorIDX)) {
+			if(iFreq<giFLW_freqMin) {
+				iRet = -3;
+				break;
+			}
+			if(iFreq>giFLW_freqMax) {
+				iRet = -4;
+				break;
+			}
+			iChk = up_write_reg (bFreqRegHi, iFreq&0xFF00);
+			iChk = up_write_reg (bFreqRegLo, iFreq<<8);
+			giFLW_freq = iFreq;
+			iRet = 0;
+		}
+
+		if(4==gptHWCFG->m_val.bFL_PWM) {
+			if((MSP430_FL_IDX_ALL==iColorIDX)||(MSP430_FL_IDX_R==iColorIDX)) {
+				if(iFreq<giFLW_freqMin) {
+					iRet = -5;
+					break;
+				}
+				if(iFreq>giFLW_freqMax) {
+					iRet = -6;
+					break;
+				}
+				iChk = up_write_reg (bFreqRegHi, iFreq&0xFF00);
+				iChk = up_write_reg (bFreqRegLo, iFreq<<8);
+				giFLW_freq = iFreq;
+				iRet = 0;
+			}
+		}
+	}while(0);
+
+	up_cmd_unlock();
+
+	return iRet;
+}
+int msp430_fl_get_freq(int iColorIDX)
+{
+	int iRet=-1;
+	if(MSP430_FL_IDX_W==iColorIDX) {
+		iRet = giFLW_freq;
+	}
+	else if(MSP430_FL_IDX_R==iColorIDX) {
+		iRet = giFLW_freq;
+	}
+	return iRet;
+}
+int msp430_fl_get_freq_max(int iColorIDX)
+{
+	int iRet=-1;
+	if(MSP430_FL_IDX_W==iColorIDX) {
+		iRet = giFLW_freqMax;
+	}
+	else if(MSP430_FL_IDX_R==iColorIDX) {
+		iRet = giFLW_freqMax;
+	}
+	return iRet;
+}
+int msp430_fl_get_freq_min(int iColorIDX)
+{
+	int iRet=-1;
+	if(MSP430_FL_IDX_W==iColorIDX) {
+		iRet = giFLW_freqMin;
+	}
+	else if(MSP430_FL_IDX_R==iColorIDX) {
+		iRet = giFLW_freqMin;
+	}
+	return iRet;
+}
+
+int msp430_fl_endtime(unsigned short wFL_EndtimeScale) 
+{
+	int iRet=0;
+	int iChk;
+	unsigned short wFL_EndtimeHi,wFL_EndtimeLo;
+
+	iChk = up_cmd_lock(__LINE__);
+	if(iChk<0) {
+		printk("[warning] %s(%d) skipped errorno(%d) \n",__FUNCTION__,__LINE__,iChk);
+		return -1;
+	}
+	
+	wFL_EndtimeHi = wFL_EndtimeScale&0xff00;
+	wFL_EndtimeLo = (wFL_EndtimeScale<<8)&0xff00;
+
+	iChk = up_write_reg (0xA1, wFL_EndtimeHi);	// Disable front light auto off timer
+	iChk = up_write_reg (0xA2, wFL_EndtimeLo);
+
+	up_cmd_unlock();
+	return iRet;
+}
+
 
 struct ntx_up_dev_info {
 	struct device *dev;
@@ -375,7 +753,7 @@ int ntx_up_charge_status (void)
 	if (gpio_get_value (ntx_misc->acin_gpio))
 		return 0;	
 	else 
-	   	return ((up_read_reg (0x60)&0x08)?1:3);
+	   	return ((up_safe_read_reg (0x60)&0x08)?1:3);
 #else
 	return ntx_charge_status();
 #endif
@@ -464,11 +842,12 @@ int msp430_battery(void)
 	}
 	
 	if (gIsMSP430IntTriggered || !gLastBatValue || ((0 == gUSB_Change_Tick) && (time_after (jiffies, gLastBatTick)))) {
-		battValue = up_read_reg (0x41);
+		
+		battValue = up_safe_read_reg (0x41);
 		if (battValue>0) {
 			gLastBatTick = jiffies+200;
 			if (gpio_get_value (ntx_misc->acin_gpio)) {// not charging
-				temp = up_read_reg (0x60);
+				temp = up_safe_read_reg (0x60);
 				if (-1 != temp ) {
 					if (0x8000 & temp) {
 						printk ("[%s-%d] =================> Micro P MSP430 alarm triggered <===================\n", __func__, __LINE__);
@@ -703,13 +1082,21 @@ static void acin_pg_chk( void )
 	extern int mxc_usb_plug_getstatus (void);
 
 
-	if((36==gptHWCFG->m_val.bPCB||40==gptHWCFG->m_val.bPCB) && 0x03!=gptHWCFG->m_val.bUIConfig) {
-		// E60Q32/E60Q5X control charging led if not MP/RD mode . 
-		if(mxc_usb_plug_getstatus()) {
-			led_red(1);
-		}
-		else {
-			led_red(0);
+	if(9!=gptHWCFG->m_val.bCustomer) {
+		if( (36==gptHWCFG->m_val.bPCB||
+			 40==gptHWCFG->m_val.bPCB||
+			 50==gptHWCFG->m_val.bPCB||
+			 58==gptHWCFG->m_val.bPCB||
+			((gptHWCFG->m_val.bPCB>=61)&&(gMX6SL_CHG_LED==gMX6SL_ON_LED)) ) && 
+			0x03!=gptHWCFG->m_val.bUIConfig) 
+		{
+			// E60Q32/E60Q5X control charging led if not MP/RD mode . 
+			if(mxc_usb_plug_getstatus()) {
+				led_red(1);
+			}
+			else {
+				led_red(0);
+			}
 		}
 	}
 
@@ -911,27 +1298,19 @@ void msp430_homepad_enable(int iEnable)
 {
 	if (2==iEnable) {
 		printk("%s(),re-calibrate home pad\n",__FUNCTION__);
-		up_write_reg(0xC0,0x0300); // enabled touch pad and auto calibration .
+		up_safe_write_reg(0xC0,0x0300); // enabled touch pad and auto calibration .
 	}
 	else if(1==iEnable) {
-		up_write_reg(0xC0,0x0100); // enabled touch pad and auto calibration .
+		up_safe_write_reg(0xC0,0x0100); // enabled touch pad and auto calibration .
 	}
 	else if(0==iEnable) {
-		up_write_reg(0xC0,0x0000); // disabled touch pad .
+		up_safe_write_reg(0xC0,0x0000); // disabled touch pad .
 	}
 	else {
 		// nothing to do .
 	}
 }
 
-void msp430_homepad_sensitivity_set(unsigned char bVal)
-{
-	unsigned short wTemp = (unsigned short)bVal;
-
-	wTemp = wTemp<<8 ;
-	printk("%s(0x%x)\n",__FUNCTION__,bVal);
-	up_write_reg(0xAC,wTemp); // disabled touch pad .
-}
 
 #define HOMELED_PWM_DELAY_LEVEL_MAX		0x05
 #define HOMELED_PWM_DELAY_LEVEL_MIN		0x0
@@ -943,6 +1322,8 @@ static unsigned short gwHomeLed_gpio_delay_level_max = HOMELED_GPIO_DELAY_LEVEL_
 static unsigned short gwHomeLed_gpio_delay_level = 0x0900;
 
 static unsigned short gwHomeLedType = (unsigned short)(-1);
+
+static int gihomepad_sensitivity=-1;
 
 static const char * gszHomeLedTypesA[] = {
 	"gpio",
@@ -980,7 +1361,7 @@ int msp430_homeled_type_set(int iHomeLedType)
 	}
 
 	if(iHomeLedType!=(int)gwHomeLedType) {
-		up_write_reg(0xA9,wHomeLedType); // .
+		up_safe_write_reg(0xA9,wHomeLedType); // .
 		gwHomeLedType = (unsigned short)iHomeLedType ;
 		printk("%s() : [%d] -> 0x%x\n",__FUNCTION__,iHomeLedType,wHomeLedType);
 	}
@@ -999,10 +1380,10 @@ int msp430_homeled_type_get(char **O_ppszHomeLedStr)
 void msp430_homeled_enable(int iEnable)
 {
 	if(iEnable) {
-		up_write_reg(0xA8,0x0100); // enabled the home led .
+		up_safe_write_reg(0xA8,0x0100); // enabled the home led .
 	}
 	else {
-		up_write_reg(0xA8,0x0000); // disabled the home led .
+		up_safe_write_reg(0xA8,0x0000); // disabled the home led .
 	}
 }
 
@@ -1074,7 +1455,7 @@ int msp430_set_homeled_gpio_delaylevel(int iDelayLevel)
 	wDelayLevel = ((unsigned short)iDelayLevel)<<8;
 	if(wCurDelayLevel!=wDelayLevel) {
 		printk("%s():0x%x->0x%x\n",__FUNCTION__,wCurDelayLevel,wDelayLevel);
-		up_write_reg(0xAA,wDelayLevel); // set Home LED normal delay 
+		up_safe_write_reg(0xAA,wDelayLevel); // set Home LED normal delay 
 		gwHomeLed_gpio_delay_level = wDelayLevel;
 	}
 	return 0;
@@ -1105,7 +1486,7 @@ int msp430_set_homeled_pwm_delaylevel(int iDelayLevel)
 	wDelayLevel = ((unsigned short)iDelayLevel)<<8;
 	if(wCurDelayLevel!=wDelayLevel) {
 		printk("%s():0x%x->0x%x\n",__FUNCTION__,wCurDelayLevel,wDelayLevel);
-		up_write_reg(0xAB,wDelayLevel); // set Home LED normal delay 
+		up_safe_write_reg(0xAB,wDelayLevel); // set Home LED normal delay 
 		gwHomeLed_pwm_delay_level = wDelayLevel;
 	}
 	return 0;
@@ -1116,6 +1497,32 @@ int msp430_get_homeled_pwm_delaylevel(void)
 	int iRet;
 	iRet = (int)(gwHomeLed_pwm_delay_level>>8);
 	return iRet;
+}
+
+int msp430_homepad_sensitivity_set(unsigned char bVal)
+{
+	unsigned short wTemp = (unsigned short)bVal;
+	int iRet = 0;
+
+	wTemp = wTemp<<8 ;
+	printk("%s(0x%x)\n",__FUNCTION__,bVal);
+	if(up_safe_write_reg(0xAC,wTemp)<0) { 
+		iRet = -1;
+	}
+	else {
+		gihomepad_sensitivity=(int)bVal;
+	}
+	return iRet;
+}
+int msp430_homepad_sensitivity_get(void)
+{
+#if 0
+	if(-1==gihomepad_sensitivity) {
+		// sensitivity not set .
+		gihomepad_sensitivity = (int)up_safe_read_reg(0xAC) ;
+	}
+#endif
+	return gihomepad_sensitivity;
 }
 
 
@@ -1136,6 +1543,8 @@ static __devinit int msp430_i2c_probe(struct i2c_client *client,
 					const struct i2c_device_id *id)
 {
 	int err = 0;
+	unsigned short wDevID;
+	int iDevIDRD_retry=0;
 
 	if(!i2c_check_functionality(client->adapter, I2C_FUNC_I2C))
 	{
@@ -1144,7 +1553,10 @@ static __devinit int msp430_i2c_probe(struct i2c_client *client,
   	}
 	gdwLastRTCReadTick = jiffies;
 	g_up_i2c_client = client;
-	printk ("[%s-%d] firmware version %X\n",__func__,__LINE__,msp430_deviceid());
+	do {
+		wDevID = msp430_deviceid();
+		printk ("[%s-%d] firmware version %X\n",__func__,__LINE__,wDevID);
+	}while(0==wDevID && --iDevIDRD_retry>0);
 
 	if( 1==gptHWCFG->m_val.bPMIC && 0!=gptHWCFG->m_val.bFrontLight) {
 		// FL_3V3 for Ricoh PMIC & FL is ON .
@@ -1181,6 +1593,27 @@ static __devinit int msp430_i2c_probe(struct i2c_client *client,
 		msp430_homeled_type_set(MSP430_HOMELED_TYPE_NORMAL);
 		//msp430_homeled_enable(1);
 		msp430_set_homeled_delayms(ntx_get_homeled_delay_ms());
+	}
+	if(4==gptHWCFG->m_val.bFL_PWM) {
+		gbMSP430_RegFLW_dutyL = 0xA8;
+		gbMSP430_RegFLW_dutyH = 0xA9;
+		giMSP430_FL_W_idx=1;
+	}
+	if( 0 == NTXHWCFG_TST_FLAG(gptHWCFG->m_val.bFrontLight_Flags,0)) {
+		// FL not boot on .
+		if(0==gptHWCFG->m_val.bFL_PWM || 4==gptHWCFG->m_val.bFL_PWM) {
+			// FL is controlled by MSP430 .
+			gwMSP430_fl_enable_state = 0;
+			msp430_fl_enable (MSP430_FL_IDX_ALL,0);
+		}
+	}
+	else {
+		if(4==gptHWCFG->m_val.bFL_PWM) {
+			gwMSP430_fl_enable_state = 0x0200;
+		}
+		else {
+			gwMSP430_fl_enable_state = 0x0100;
+		}
 	}
 
 	msp430_create_sys_attrs();

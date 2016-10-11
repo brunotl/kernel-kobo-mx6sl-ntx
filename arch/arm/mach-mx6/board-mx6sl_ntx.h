@@ -25,6 +25,7 @@
 #define MX6SL_HW_ID4			IMX_GPIO_NR(4, 7)	/* KEY_ROW7 */
 #define MX6SL_FL_EN				IMX_GPIO_NR(2, 10)	/* EPDC_PWRCTRL3 */
 #define MX6SL_FL_R_EN			IMX_GPIO_NR(1, 29)	/* EPDC_SDCE2 */
+#define MX6SL_FL_W_H_EN			IMX_GPIO_NR(1, 30)	/* EPDC_SDCE3 */
 #define MX6SL_EP_PWRALL			IMX_GPIO_NR(2, 14)	/* EPDC_PWRWAKEUP */
 #define MX6SL_EP_WAKEUP			IMX_GPIO_NR(2, 7)	/* EPDC_PWRCTRL0 */
 #define MX6SL_EP_PWRUP			IMX_GPIO_NR(2, 8)	/* EPDC_PWRCTRL1 */
@@ -46,6 +47,8 @@
 #define	MX6SL_SD3_DAT2			IMX_GPIO_NR(5, 16) 	/* SD3_DAT2	 */
 #define	MX6SL_SD3_DAT3			IMX_GPIO_NR(5, 17)	/* SD3_DAT3	 */
 
+#define MX6SL_I2C1_SCL			IMX_GPIO_NR(3, 12)	/* I2C1_SCL */
+#define MX6SL_I2C1_SDA			IMX_GPIO_NR(3, 13)	/* I2C1_SDA */
 #define MX6SL_I2C2_SCL			IMX_GPIO_NR(3, 14)	/* I2C2_SCL */
 #define MX6SL_I2C2_SDA			IMX_GPIO_NR(3, 15)	/* I2C2_SDA */
 #define MX6SL_I2C3_SCL			IMX_GPIO_NR(3, 21)	/* I2C3_SCL */
@@ -62,8 +65,13 @@
 #define GPIO_KB_ROW0			IMX_GPIO_NR(3, 25)	/* ROW0 */
 #define GPIO_KB_ROW1			IMX_GPIO_NR(3, 27)	/* ROW1 */
 #define GPIO_KB_ROW2			IMX_GPIO_NR(3, 29)	/* ROW2 */
+#define GPIO_KB_ROW3			IMX_GPIO_NR(3, 31)	/* ROW3 */
 
+#define MX6SL_FL_PWR_ON			IMX_GPIO_NR(3, 29)	/* ROW2 */
 #define MX6SL_KL25_INT2			IMX_GPIO_NR(3, 29)	/* ROW2 */
+#define MX6SL_P2_KL25_INT2			IMX_GPIO_NR(4, 3)	/* ROW5 */
+
+#define MX6SL_SI114X_INT		IMX_GPIO_NR(4, 0)	/* COL4 */
 #if 1
 #define MX6SL_WACOM_INT			IMX_GPIO_NR(4, 0)	/* COL4 */
 #define MX6SL_WACOM_PDCT		IMX_GPIO_NR(4, 2)	/* COL5 */
@@ -80,7 +88,16 @@
 #define MX6SL_WALTOP_INT		IMX_GPIO_NR(4, 1)       /* ROW4 */
 #define MX6SL_WALTOP_INT_4_0		IMX_GPIO_NR(4, 0)       /* ROW4 */
 
+#define MX6SL_AD_LDO_EN		IMX_GPIO_NR(4, 2)       /* COL5 */
+#define MX6SL_AD_1V8_ON		IMX_GPIO_NR(4, 0)       /* COL4 */
+#define MX6SL_AD_3V3_ON		IMX_GPIO_NR(3, 30)       /* COL3 */
+#define MX6SL_USB_ID			IMX_GPIO_NR(5, 9)       /* SD1_DAT5 */
 
+#define FL_COLOR_FLAGS_W			0x0001
+#define FL_COLOR_FLAGS_R			0x0002
+#define FL_COLOR_FLAGS_G			0x0004
+#define FL_COLOR_FLAGS_B			0x0008
+#define FL_COLOR_FLAGS_ALL		0x000f
 extern volatile unsigned gMX6SL_NTX_ACIN_PG;
 extern volatile unsigned gMX6SL_NTX_CHG;
 extern volatile unsigned gMX6SL_MSP_INT;
@@ -95,6 +112,8 @@ extern volatile unsigned gMX6SL_WIFI_3V3;
 extern volatile unsigned gMX6SL_WIFI_RST;
 extern volatile unsigned gMX6SL_WIFI_INT;
 
+extern volatile unsigned gMX6SL_FL_W_H_EN;
+extern volatile unsigned gMX6SL_FL_PWR_EN;
 static iomux_v3_cfg_t mx6sl_brd_ntx_kb_pads[] = {
 	MX6SL_PAD_KEY_COL0__KPP_COL_0,
 	MX6SL_PAD_KEY_COL1__KPP_COL_1,
@@ -121,6 +140,10 @@ static iomux_v3_cfg_t mx6sl_brd_ntx_sd4_pads[] = {
 	MX6SL_PAD_FEC_TX_EN__USDHC4_DAT6,
 	MX6SL_PAD_FEC_TXD1__USDHC4_DAT7,
 	MX6SL_PAD_FEC_REF_CLK__GPIO_4_26_PULLHIGH,
+};
+
+static iomux_v3_cfg_t mx6sl_brd_ntx_sd4_clk_pads[] = {
+	MX6SL_PAD_FEC_MDIO__USDHC4_CLK,
 };
 
 static iomux_v3_cfg_t mx6sl_brd_ntx_sd4_gpio_pads[] = {

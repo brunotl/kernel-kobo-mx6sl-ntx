@@ -59,4 +59,5 @@ obj-$(CONFIG_KEYBOARD_MC9S08DZ60)	+= mc9s08dz60_keyb.o
 obj-$(CONFIG_KEYBOARD_MPR121)		+= mpr121.o
 obj-y += gpiofn.o 
 obj-y += tle4913_keypad.o
+obj-$(CONFIG_SND_SOC_ALC5640) += headphone_detect_sw.o
 

@@ -231,17 +231,29 @@ static ssize_t state_extended_store(struct kobject *kobj, struct kobj_attribute 
 			   const char *buf, size_t n)
 {
 	if ('1' == *buf) {
+
+		if(1 == gSleep_Mode_Suspend) {
+			return n;
+		}
+
 		gSleep_Mode_Suspend = 1;
-		if(36==gptHWCFG->m_val.bPCB || 40==gptHWCFG->m_val.bPCB || 49==gptHWCFG->m_val.bPCB) {
-			// E60Q3X/E60Q5X/E60QDX
+		if(36==gptHWCFG->m_val.bPCB || 40==gptHWCFG->m_val.bPCB || 49==gptHWCFG->m_val.bPCB || 0!=gptHWCFG->m_val.bHOME_LED_PWM || 16==gptHWCFG->m_val.bKeyPad || 18==gptHWCFG->m_val.bKeyPad)
+		{
+			// E60Q3X/E60Q5X/E60QDX/Key pad with HOMEPAD
 			msp430_homepad_enable(0);
 		}
 	}
 	else {
+
+		if(0 == gSleep_Mode_Suspend) {
+			return n;
+		}
+
 		gSleep_Mode_Suspend = 0;
 //	printk ("[%s-%d] %s() %d\n",__FILE__,__LINE__,__func__,gSleep_Mode_Suspend);
-		if(36==gptHWCFG->m_val.bPCB || 40==gptHWCFG->m_val.bPCB || 49==gptHWCFG->m_val.bPCB) {
-			// E60Q3X/E60Q5X/E60QDX
+		if(36==gptHWCFG->m_val.bPCB || 40==gptHWCFG->m_val.bPCB || 49==gptHWCFG->m_val.bPCB || 0!=gptHWCFG->m_val.bHOME_LED_PWM || 16==gptHWCFG->m_val.bKeyPad || 18==gptHWCFG->m_val.bKeyPad) 
+		{
+			// E60Q3X/E60Q5X/E60QDX/Key pad with HOMEPAD
 			if(0!=ntx_get_homepad_enabled_status()){
 				msp430_homepad_enable(2);
 			}

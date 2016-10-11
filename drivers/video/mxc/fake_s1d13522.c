@@ -966,7 +966,7 @@ static EN_EPSON_ERROR_CODE S1D13522_reg_write(u16 wIndex, u16 wValue)
 				//ASSERT(gptHWCFG);
 				if(0==gptHWCFG->m_val.bDisplayPanel||3==gptHWCFG->m_val.bDisplayPanel||\
 						6==gptHWCFG->m_val.bDisplayPanel||8==gptHWCFG->m_val.bDisplayPanel||\
-						9==gptHWCFG->m_val.bDisplayPanel)
+						9==gptHWCFG->m_val.bDisplayPanel||16==gptHWCFG->m_val.bDisplayPanel)
 				{
 					// Left Out EPD Panel ...
 					GALLEN_DBGLOCAL_RUNLOG(12);
@@ -981,7 +981,7 @@ static EN_EPSON_ERROR_CODE S1D13522_reg_write(u16 wIndex, u16 wValue)
 				ASSERT(gptHWCFG);
 				if(0==gptHWCFG->m_val.bDisplayPanel||3==gptHWCFG->m_val.bDisplayPanel||\
 						6==gptHWCFG->m_val.bDisplayPanel||8==gptHWCFG->m_val.bDisplayPanel||\
-						9==gptHWCFG->m_val.bDisplayPanel)
+						9==gptHWCFG->m_val.bDisplayPanel||16==gptHWCFG->m_val.bDisplayPanel)
 				{
 					// Left Out EPD Panel ...
 					GALLEN_DBGLOCAL_RUNLOG(12);
@@ -996,7 +996,7 @@ static EN_EPSON_ERROR_CODE S1D13522_reg_write(u16 wIndex, u16 wValue)
 				ASSERT(gptHWCFG);
 				if(0==gptHWCFG->m_val.bDisplayPanel||3==gptHWCFG->m_val.bDisplayPanel||\
 						6==gptHWCFG->m_val.bDisplayPanel||8==gptHWCFG->m_val.bDisplayPanel||\
-						9==gptHWCFG->m_val.bDisplayPanel)
+						9==gptHWCFG->m_val.bDisplayPanel||16==gptHWCFG->m_val.bDisplayPanel)
 				{
 					// Left Out EPD Panel ...
 					GALLEN_DBGLOCAL_RUNLOG(24);
@@ -1011,7 +1011,7 @@ static EN_EPSON_ERROR_CODE S1D13522_reg_write(u16 wIndex, u16 wValue)
 				ASSERT(gptHWCFG);
 				if(0==gptHWCFG->m_val.bDisplayPanel||3==gptHWCFG->m_val.bDisplayPanel||\
 						6==gptHWCFG->m_val.bDisplayPanel||8==gptHWCFG->m_val.bDisplayPanel||\
-						9==gptHWCFG->m_val.bDisplayPanel)
+						9==gptHWCFG->m_val.bDisplayPanel||16==gptHWCFG->m_val.bDisplayPanel)
 				{
 					// Left Out EPD Panel ...
 					GALLEN_DBGLOCAL_RUNLOG(26);
@@ -2520,6 +2520,21 @@ int fake_s1d13522_check_var(struct fb_var_screeninfo *var, struct fb_info *info)
 				break;
 			}
 		}	
+		else if(8==gptHWCFG->m_val.bDisplayResolution) {
+			switch(gtRotate)
+			{
+			case epdfb_rotate_0:
+			case epdfb_rotate_180:
+				var->xres = 1872;
+				var->yres = 1404;
+				break;	
+			case epdfb_rotate_90:
+			case epdfb_rotate_270:
+				var->xres = 1404;
+				var->yres = 1872;
+				break;
+			}
+		}	
 		else {
 			switch(gtRotate)
 			{
@@ -2682,6 +2697,9 @@ int32_t fake_s1d13522_ioctl(unsigned int cmd,unsigned long arg,EPDFB_DC *pDC)
 						break;
 					case 6:// 1600x1200
 						dwImgStructSize=((sizeof(unsigned int)*6)+(1600*1200));
+						break;
+					case 8:// 1872x1404
+						dwImgStructSize=((sizeof(unsigned int)*6)+(1872*1404));
 						break;
 					default :
 						dwImgStructSize=sizeof(ST_IMAGE_PGM);
@@ -2949,22 +2967,20 @@ int32_t fake_s1d13522_ioctl(unsigned int cmd,unsigned long arg,EPDFB_DC *pDC)
 
 int fb_capture_ex(EPDFB_DC *pDC,int iSrcImgX,int iSrcImgY,int iSrcImgW,int iSrcImgH,
 		int iBitsTo,EPDFB_ROTATE_T I_tRotateDegree,char *pszFileName,
-		unsigned long I_dwCapTotal)
+		unsigned long I_dwCapTotal,int iUpdMode,int iIsFullUpd)
 {
 	EPDFB_DC *ptDC_Capture;
 	char cfnbufA[256];
+	char cUpdModeBufA[32];
 //	unsigned long _FBw,_FBh;
 	unsigned long _w,_h,_x,_y;
 	static unsigned long gdwCaptureCnt=0;
-#ifdef OUTPUT_SNAPSHOT_IMGFILE//[
-	const unsigned long dwCaptureTotals=OUTPUT_SNAPSHOT_IMGFILE;
-#else//][!OUTPUT_SNAPSHOT_IMGFILE
 	const unsigned long dwCaptureTotals=I_dwCapTotal;
-#endif //]OUTPUT_SNAPSHOT_IMGFILE
 	int iCaptureIDX;
 
 
 	ASSERT(pDC);
+
 
 	if(0==pszFileName) {
 		return -1;
@@ -3002,9 +3018,15 @@ int fb_capture_ex(EPDFB_DC *pDC,int iSrcImgX,int iSrcImgY,int iSrcImgW,int iSrcI
 	ptDC_Capture = epdfbdc_create_ex2 ( _w,_h,_w,_h,iBitsTo,0,pDC->dwFlags);
 	epdfbdc_put_dcimg(ptDC_Capture,pDC,I_tRotateDegree,_x,_y,_w,_h,0,0);
 
-	sprintf(cfnbufA,"%s_%ux%u-%d_%dx-%dy-%dx%d.raw%d",
+	if( (-1!=iUpdMode) && (-1!=iIsFullUpd) ) {
+		sprintf(cUpdModeBufA,"-m%d-%s",iUpdMode,iIsFullUpd?"Full":"Partial");
+	}
+	else {
+		cUpdModeBufA[0]='\0';
+	}
+	sprintf(cfnbufA,"%s_%ux%u-%d_%dx-%dy-%dx%d%s.raw%d",
 			pszFileName,pDC->dwWidth,pDC->dwHeight,iCaptureIDX,
-			_x,_y,_w,_h,iBitsTo);
+			_x,_y,_w,_h,cUpdModeBufA,iBitsTo);
 
 	printk("write raw img %d/%d -> \"%s\" ,%d bits,%u bytes,w=%u,h=%u\n",
 			iCaptureIDX,dwCaptureTotals,cfnbufA,iBitsTo,ptDC_Capture->dwDCSize,_w,_h);
@@ -3023,7 +3045,7 @@ int fb_capture_ex(EPDFB_DC *pDC,int iSrcImgX,int iSrcImgY,int iSrcImgW,int iSrcI
 
 	epdfbdc_delete(ptDC_Capture);
 
-	if(gdwCaptureCnt>=dwCaptureTotals) { 
+	if(0==(gdwCaptureCnt%dwCaptureTotals)) { 
 		return 1;
 	}
 	else {
@@ -3143,7 +3165,7 @@ static VOID PROGRESS_BAR(EPDFB_DC *pDC)
 void fb_capture(EPDFB_DC *pDC,int iBitsTo,EPDFB_ROTATE_T I_tRotateDegree,char *pszFileName)
 {
 	fb_capture_ex(pDC,0,0,pDC->dwWidth,pDC->dwHeight,
-			iBitsTo,I_tRotateDegree,pszFileName,1);
+			iBitsTo,I_tRotateDegree,pszFileName,1,-1,-1);
 }
 #endif //] SHOW_PROGRESS_BAR
 

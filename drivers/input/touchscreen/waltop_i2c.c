@@ -22,7 +22,6 @@
  * GNU General Public License for more details.
  * 
  */
-
 #include <linux/unistd.h>  
 #include <linux/device.h>
 #include <linux/init.h>
@@ -43,7 +42,8 @@
 #include <linux/bitops.h>
 #include <linux/kernel.h>
 #include <linux/byteorder/generic.h>
-#ifdef CONFIG_HAS_EARLYSUSPEND
+//#ifdef CONFIG_HAS_EARLYSUSPEND
+#if 0
 	#include <linux/earlysuspend.h>
 #endif 
 #include <linux/interrupt.h>
@@ -160,7 +160,8 @@ struct waltop_I2C
 	// Ensures that only one function can specify the Device Mode at a time
 	struct mutex mutex; // reentrant protection for struct
 
-	#ifdef CONFIG_HAS_EARLYSUSPEND
+//	#ifdef CONFIG_HAS_EARLYSUSPEND
+	#if 0
 	struct early_suspend early_suspend;
 	#endif
 };
@@ -178,7 +179,7 @@ static irqreturn_t waltop_I2C_irq(int irq, void *handle);
 static struct workqueue_struct *waltop_I2C_wq=NULL;
 static struct waltop_I2C *tp = NULL;
 static u8 m_device_info[12];
-static int m_show_DebugLog=1;	// show Debug debug log on/off
+static int m_show_DebugLog=0;	// show Debug debug log on/off
 static int empen_early_suspended = 0;	// 1 means in suspend mode
 //static int m_driver_probe=0;
 #if (!USE_IRQ_FUNCTION)
@@ -767,8 +768,8 @@ static int pen_set_job_start(void)
 	if (0 > request_irq(PEN_IRQ_NUM, waltop_I2C_irq, IRQF_TRIGGER_FALLING, WALTOP_DEVICE_NAME, NULL)) {
 		printk ("[%s-%d] request irq failed.\n", __func__, __LINE__);
 	}
-	else
-		enable_irq_wake (PEN_IRQ_NUM);
+//	else
+//		enable_irq_wake (PEN_IRQ_NUM);
 }
 
 static ssize_t waltop_show_reset(struct device *dev, struct device_attribute *attr, char *buf)
@@ -994,8 +995,10 @@ void waltop_I2C_worker(struct work_struct *work)
 		sum = sum + tp->pkt_data[i];
 	if( sum != tp->pkt_data[CORD_SUM_BYTE] )
 	{
-		printk(KERN_ERR "%s#%d:%s Checksum mismatch, %x, %x\n", 
+		if( m_show_DebugLog ) {
+			printk(KERN_ERR "%s#%d:%s Checksum mismatch, %x, %x\n",
 				KLOG_NAME, __LINE__, __func__, tp->pkt_data[CORD_SUM_BYTE], sum);
+		}
 		goto i2cWorker_out;
 	}
 
@@ -1156,6 +1159,7 @@ static int waltop_I2C_initialize(struct i2c_client *client)
 {
 	struct input_dev *input_device;
 	int ret = 0;
+	int retry = 0;
 	printk("waltop_I2C_initialize***\n");
 
 	// create the input device and register it.
@@ -1171,6 +1175,13 @@ static int waltop_I2C_initialize(struct i2c_client *client)
 
 	// 2013/01/30, Martin add device information
 	ret = waltop_I2C_readDeviceInfo();
+	while ((ret <= 0) && retry < 10) {
+		printk("waltop_I2C_readDeviceInfo try again !!\n");
+		waltop_ResetEMPen(0);
+		ret = waltop_I2C_readDeviceInfo();
+		retry++;
+	}
+
 	if( ret>0 ) { 
 		tp->x_max = ((m_device_info[1] << 8) | m_device_info[2]);
 		tp->y_max = ((m_device_info[3] << 8) | m_device_info[4]);
@@ -1271,7 +1282,8 @@ succeed:
 /*****************************************************************************
  * Early Suspend
  ****************************************************************************/
-#ifdef CONFIG_HAS_EARLYSUSPEND
+//#ifdef CONFIG_HAS_EARLYSUSPEND
+#if 0
 static void waltop_early_suspend(struct early_suspend *h)
 {
 	int ret = 0;
@@ -1312,6 +1324,27 @@ static void waltop_late_resume(struct early_suspend *h)
 }
 #endif
 
+extern int gSleep_Mode_Suspend;
+
+static int waltop_suspend(struct platform_device *pdev, pm_message_t state)
+{
+	printk ("[%s-%d] ...\n",__func__, __LINE__);
+	if (gSleep_Mode_Suspend) {
+		free_irq(PEN_IRQ_NUM, NULL);
+	}
+	else
+		enable_irq_wake (PEN_IRQ_NUM);
+	return 0;
+}
+
+static int waltop_resume(struct platform_device *pdev)
+{
+	if (gSleep_Mode_Suspend)
+		pen_set_job_start ();
+	else
+		disable_irq_wake (PEN_IRQ_NUM);
+	return 0;
+}
 
 static int __devinit waltop_i2c_probe(struct i2c_client *client,const struct i2c_device_id *id)
 {
@@ -1350,6 +1383,10 @@ static int __devinit waltop_i2c_probe(struct i2c_client *client,const struct i2c
 		gdwScreenMaxY=1200;
 		gdwScreenMaxX=1600;
 		break;
+	case 8: // 1872x1404
+		gdwScreenMaxY=1404;
+		gdwScreenMaxX=1872;
+		break;
 	default:
 		gdwScreenMaxY=600;
 		gdwScreenMaxX=800;
@@ -1380,7 +1417,8 @@ static int __devinit waltop_i2c_probe(struct i2c_client *client,const struct i2c
 	pen_set_job_start();
 
 #if (!ADD_PALTFORM_DEVICE_DRIVER)
-#ifdef CONFIG_HAS_EARLYSUSPEND
+//#ifdef CONFIG_HAS_EARLYSUSPEND
+#if 0
 	tp->early_suspend.level = EARLY_SUSPEND_LEVEL_DISABLE_FB - 1;
 	tp->early_suspend.suspend = waltop_early_suspend;
 	tp->early_suspend.resume = waltop_late_resume;
@@ -1403,7 +1441,8 @@ static int __devexit waltop_i2c_remove(struct i2c_client *client)
 {
 	dev_info(&(client->dev), "%s-%s: Driver is unregistering\n", KLOG_NAME, __func__);
 
-#ifdef CONFIG_HAS_EARLYSUSPEND
+//#ifdef CONFIG_HAS_EARLYSUSPEND
+#if 0
 	unregister_early_suspend(&tp->early_suspend);
 #endif
 	input_unregister_device(tp->input);	
@@ -1445,7 +1484,8 @@ static struct i2c_driver waltop_i2c_driver =
 	.id_table	= waltop_i2c_idtable,
 	.probe	= waltop_i2c_probe,
 	.remove	= waltop_i2c_remove,
-
+	.suspend = waltop_suspend,
+	.resume = waltop_resume,
 };
 
 #if 0

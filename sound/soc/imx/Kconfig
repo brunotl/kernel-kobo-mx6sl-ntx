@@ -130,4 +130,11 @@ config SND_MXC_SOC_IRAM
 	help
 	  Say Y if you don't want Audio playback buffers in external ram
 
+config SND_SOC_IMX_ALC5640
+	tristate "SoC Audio support for IMX ALC5640"
+	select SND_MXC_SOC_SSI
+	select SND_SOC_ALC5640
+	help
+	  Say Y if you want to add support for Soc audio codec ALC5631.
+
 endif	# SND_IMX_SOC

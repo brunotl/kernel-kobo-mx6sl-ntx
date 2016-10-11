@@ -36,16 +36,21 @@
 #define GDEBUG 0
 #include <linux/gallen_dbg.h>
 
+#define KL25_1_ADDR	0x5A
+#define KL25_2_ADDR	0x5B
+
 #define ACTIVE 1
 #define IDLE 0
 static int current_mode = ACTIVE;	// default active
+static int current_mode_1 = ACTIVE;	// default active
 
 extern volatile NTX_HWCONFIG *gptHWCFG;
 extern int gSleep_Mode_Suspend;
+extern int gWakeUpbyKL25;
 
-struct i2c_client *g_kl25_i2c_client;
+struct i2c_client *g_kl25_i2c_client, *g_kl25_i2c_client_2;
 static struct delayed_work kl25_delay_work;
-static struct input_dev *idev;
+// static struct input_dev *idev;
 
 static const char KL25_NAME[]	= "kl25";
 static int kl25_triggered = 0;
@@ -57,23 +62,23 @@ static const uint8_t wakeup_command[] = {0x00, 0x00, 0x00};
 unsigned long g_kl25_result = 0;
 unsigned long g_kl25_action = 0;
 
-static int kl25_int_level(void)
+static int kl25_int_level(struct i2c_client *client)
 {
 	unsigned v;
-	gpio_direction_input (irq_to_gpio(g_kl25_i2c_client->irq));
-	v = gpio_get_value(irq_to_gpio(g_kl25_i2c_client->irq));
-//	printk("kl25_int2(%d) = %d\n",irq_to_gpio(g_kl25_i2c_client->irq),v);
+	gpio_direction_input (irq_to_gpio(client->irq));
+	v = gpio_get_value(irq_to_gpio(client->irq));
+//	printk("kl25_int2(%X, %d) = %d\n",client->addr,irq_to_gpio(client->irq),v);
 	return v;
 }
 
-unsigned short kl25_ident(void)
+int kl25_ident(struct i2c_client *client)
 {
 	uint8_t buf_recv[5];
 
-	i2c_master_send(g_kl25_i2c_client, ident_command, sizeof(ident_command));
+	i2c_master_send(client, ident_command, sizeof(ident_command));
 	msleep(20);
-	i2c_master_recv(g_kl25_i2c_client, buf_recv, 4);
-	printk("[%s-%d] KL25 ident: %02x %02x %02x %02x\n",__func__,__LINE__,buf_recv[0],buf_recv[1],buf_recv[2],buf_recv[3]);
+	i2c_master_recv(client, buf_recv, 4);
+	printk("[%s-%d] KL25 ident (%02X): %02x %02x %02x %02x\n",__func__,__LINE__,client->addr, buf_recv[0],buf_recv[1],buf_recv[2],buf_recv[3]);
 	if(3==buf_recv[0] && 0x56==buf_recv[1]) {
 		printk("[%s-%d] KL25 VerBootloader:%02x , VerAP:%02x\n",__func__,__LINE__, buf_recv[2], buf_recv[3]);
 	} 
@@ -87,23 +92,38 @@ unsigned short kl25_ident(void)
 
 static irqreturn_t kl25_interrupt(int irq, void *dev_id)
 {
-	kl25_triggered = 1;
-//	printk("[%s-%d] kl25 interrupt(%d) received\n",__func__,__LINE__,irq);
+	struct i2c_client *client = dev_id;
+	if (KL25_1_ADDR == client->addr)
+		kl25_triggered |= 1;
+	else
+		kl25_triggered |= 2;
+
+	printk("[%s-%d] kl25 (%02X) interrupt(%d) received\n",__func__,__LINE__, client->addr, irq);
 	schedule_delayed_work(&kl25_delay_work, 0);
 	return IRQ_HANDLED;
 }
 
 static void kl25_work_func(struct work_struct *work)
 {
-	uint8_t buf_recv[5];	
+	uint8_t buf_recv[5];
+	struct i2c_client *client;
+
+	msleep(30);
+
+	if (kl25_triggered & 1 || 0==gptHWCFG->m_val.bRSensor2)
+		client = g_kl25_i2c_client;
+	else
+		client = g_kl25_i2c_client_2;
 	
-	i2c_master_send(g_kl25_i2c_client, func_get_command, sizeof(func_get_command));
+//	printk ("[%s-%d] KL25 addr 0x%02X...\n",__func__, __LINE__, client->addr);
+	i2c_master_send(client, func_get_command, sizeof(func_get_command));
 	msleep(20);
-	i2c_master_recv(g_kl25_i2c_client, buf_recv, 3);
+	i2c_master_recv(client, buf_recv, 3);
 	if(buf_recv[0]==0 && buf_recv[1]==0 && buf_recv[2]==0){
-		printk("not waked up by KL25\n");
+		printk("[Warning] Invalid value by KL25\n");
 	}
 	else {
+		struct input_dev *idev = i2c_get_clientdata(client);
 		printk("kl25 function and orient: %x %x %x\n",buf_recv[0],buf_recv[1],buf_recv[2]);
 	
 		g_kl25_result = 0;
@@ -150,32 +170,41 @@ static void kl25_work_func(struct work_struct *work)
 		}
 		input_sync(idev);
 	}
-	kl25_triggered = 0;
+	if (kl25_triggered & 1)
+		kl25_triggered &= ~1;
+	else
+		kl25_triggered &= ~2;
+	kl25_triggered &= 0x03;
 }
 
-static int kl25_ctrl(int mode)
+static int kl25_ctrl(struct i2c_client *client, int mode)
 {
 	static const uint8_t readBookModeIn_command[] = {0x17, 0x00, 0x00};       // KL25 active
 	static const uint8_t readBookModeOut_command[] = {0x18, 0x00, 0x00};	  // KL25 inactive
 	if( ACTIVE == mode ) {
-		i2c_master_send(g_kl25_i2c_client, wakeup_command, sizeof(wakeup_command));
+		i2c_master_send(client, wakeup_command, sizeof(wakeup_command));
 		msleep(30);
-		i2c_master_send(g_kl25_i2c_client, readBookModeIn_command, sizeof(readBookModeIn_command));
+		i2c_master_send(client, readBookModeIn_command, sizeof(readBookModeIn_command));
 		msleep(30);
-		i2c_master_send(g_kl25_i2c_client, readBookModeIn_command, sizeof(readBookModeIn_command));
-		printk("[%s-%d] set KL25 active mode\n",__func__,__LINE__);
-		current_mode = ACTIVE;
+		i2c_master_send(client, readBookModeIn_command, sizeof(readBookModeIn_command));
+//		printk("[%s-%d] set KL25 (%02X) active mode\n",__func__,__LINE__, client->addr);
 	}
 	else if( IDLE == mode ) {
-		i2c_master_send(g_kl25_i2c_client, wakeup_command, sizeof(wakeup_command));
+		i2c_master_send(client, wakeup_command, sizeof(wakeup_command));
 		msleep(30);
-		i2c_master_send(g_kl25_i2c_client, readBookModeOut_command, sizeof(readBookModeOut_command));
+		i2c_master_send(client, readBookModeOut_command, sizeof(readBookModeOut_command));
 		msleep(30);
-		i2c_master_send(g_kl25_i2c_client, readBookModeOut_command, sizeof(readBookModeOut_command));
-		printk("[%s-%d] set KL25 idle mode\n",__func__,__LINE__);
-		current_mode = IDLE;
+		i2c_master_send(client, readBookModeOut_command, sizeof(readBookModeOut_command));
+//		printk("[%s-%d] set KL25 (%02X) idle mode\n",__func__,__LINE__, client->addr);
 	}
-	return current_mode; //return current_mode only if mode not equal to ACTIVE or IDLE
+	if (KL25_1_ADDR == client->addr) {
+		current_mode = mode;
+		return current_mode; //return current_mode only if mode not equal to ACTIVE or IDLE
+	}
+	else {
+		current_mode_1 = mode;
+		return current_mode_1; //return current_mode only if mode not equal to ACTIVE or IDLE
+	}
 }
 
 #define FW_UPG_DELAY	70
@@ -220,7 +249,7 @@ static void calc_checksum (unsigned char *pPacket, int length)
 	}
 }
 
-static int write_packet (unsigned char *pPacket, int length) 
+static int write_packet (struct i2c_client *client, unsigned char *pPacket, int length)
 {
 	int ret=0;
 	pPacket[0] = 0x13;		// flash write command
@@ -240,9 +269,9 @@ static int write_packet (unsigned char *pPacket, int length)
 		printk ("\n");
 	}
 #endif
-	i2c_master_send(g_kl25_i2c_client, pPacket, length);
+	i2c_master_send(client, pPacket, length);
 	msleep(FW_UPG_DELAY);
-	i2c_master_recv(g_kl25_i2c_client, pPacket, 2);
+	i2c_master_recv(client, pPacket, 2);
 	if (0x7E != pPacket[1])	{
 		printk ("[%s-%d] failed writing 0x%02X%02X (%d)!! return 0x%X, 0x%X\n",__func__,__LINE__, 
 			pPacket[4], pPacket[5], length,pPacket[0], pPacket[1]);
@@ -258,7 +287,7 @@ static int write_packet (unsigned char *pPacket, int length)
 	return (ret<0)?ret:length;
 }
 
-static int packet_process (unsigned char *pBuffer, int length)
+static int packet_process (struct i2c_client *client, unsigned char *pBuffer, int length)
 {
 	unsigned char *pIndex=pBuffer, s_length;
 	static unsigned char send_buf[80];
@@ -290,7 +319,7 @@ static int packet_process (unsigned char *pBuffer, int length)
 				s_length = ascii_to_hex (++pIndex);
 				if (length < ((pIndex + (int)(s_length<<1)) - pBuffer)) {
 					if (0x40 == packet_Length) {
-						ret = write_packet (send_buf, packet_Length);
+						ret = write_packet (client, send_buf, packet_Length);
 						packet_Length = 0;
 					}
 					return  (pIndex-pBuffer-2);
@@ -308,7 +337,7 @@ static int packet_process (unsigned char *pBuffer, int length)
 							s_last_valid_addr = s_last_addr;
 						}
 					}
-					ret = write_packet (send_buf, packet_Length);
+					ret = write_packet (client, send_buf, packet_Length);
 					packet_Length = 0;
 				}
 				if (0 == packet_Length) {
@@ -328,7 +357,7 @@ static int packet_process (unsigned char *pBuffer, int length)
 			case '9':
 				printk ("[%s-%d] S9 terminated!!\n", __func__, __LINE__);
 				if (packet_Length)
-					ret = write_packet (send_buf, packet_Length);
+					ret = write_packet (client, send_buf, packet_Length);
 				if( s_last_valid_addr ) {
 					calc_checksum (0, (0x7BFD-s_last_valid_addr));
 					s_last_valid_addr = 0;
@@ -361,29 +390,31 @@ static ssize_t fwupg_write(struct device *dev, struct device_attribute *attr,
 	int index;
 	int ret = 0;
 	unsigned char ack[20];
+	struct i2c_client *client = dev_get_drvdata (dev);
+//	printk ("[%s-%d] i2c addr 0x%02X\n",__func__, __LINE__, client->addr);
 
 	if (!g_FW_upgrade_process) {
 		g_FW_upgrade_process = 1;
 		g_FW_checksum = 0;
-		i2c_master_send(g_kl25_i2c_client, ident_command, sizeof(ident_command));
+		i2c_master_send(client, ident_command, sizeof(ident_command));
 		msleep(20);
-		i2c_master_recv(g_kl25_i2c_client, ack, 4);
+		i2c_master_recv(client, ack, 4);
 		printk("[%s-%d] KL25 ident: %02x %02x %02x %02x\n",__func__,__LINE__,ack[0],ack[1],ack[2],ack[3]);
 		msleep(20);
-		i2c_master_send(g_kl25_i2c_client, reflash_start_command, sizeof(reflash_start_command));
+		i2c_master_send(client, reflash_start_command, sizeof(reflash_start_command));
 		msleep(50);
-		i2c_master_recv(g_kl25_i2c_client, ack, 2);
+		i2c_master_recv(client, ack, 2);
 		printk ("[%s-%d] reflash start return 0x%X, 0x%X\n",__func__,__LINE__, ack[0], ack[1]);
 		msleep(20);
-		i2c_master_send(g_kl25_i2c_client, flash_start_command, sizeof(flash_start_command));
+		i2c_master_send(client, flash_start_command, sizeof(flash_start_command));
 		msleep(50);
-		i2c_master_recv(g_kl25_i2c_client, ack, 2);
+		i2c_master_recv(client, ack, 2);
 		printk ("[%s-%d] flash start return 0x%X, 0x%X\n",__func__,__LINE__, ack[0], ack[1]);
 
 		while (0x7C >= flash_erase_command[5]) {
-			i2c_master_send(g_kl25_i2c_client, flash_erase_command, sizeof(flash_erase_command));
+			i2c_master_send(client, flash_erase_command, sizeof(flash_erase_command));
 			msleep(FW_UPG_DELAY);
-			i2c_master_recv(g_kl25_i2c_client, ack, 2);
+			i2c_master_recv(client, ack, 2);
 			printk ("[%s-%d] flash erase %02X00 return 0x%X, 0x%X\n",__func__,__LINE__, flash_erase_command[5], ack[0], ack[1]);
 			if (ack[1] != 0x7E)
 			{
@@ -407,7 +438,7 @@ static ssize_t fwupg_write(struct device *dev, struct device_attribute *attr,
 			if ('\r' == buf[index] || '\n' == buf[index]) {
 				w_buffer[last_packet_length] = 0;
 //				printk ("[%s-%d] packet : %s\n",__func__,__LINE__,w_buffer);
-				ret = packet_process (w_buffer, last_packet_length);
+				ret = packet_process (client, w_buffer, last_packet_length);
 				break;
 			}
 		}
@@ -415,12 +446,12 @@ static ssize_t fwupg_write(struct device *dev, struct device_attribute *attr,
 			return count;
 		else {
 //			printk ("[%s-%d] index %d\n",__func__,__LINE__,index);
-			ret = packet_process (buf+index, (count-index));
+			ret = packet_process (client, buf+index, (count-index));
 			index += ret;
 		}
 	}
 	else {
-		ret = packet_process (buf, count);
+		ret = packet_process (client, buf, count);
 		index = ret;
 	}
 	last_packet_length = count - index;
@@ -433,14 +464,14 @@ static ssize_t fwupg_write(struct device *dev, struct device_attribute *attr,
 		printk ("[%s-%d] checksum 0x%04X\n",__func__,__LINE__, g_FW_checksum);
 		checksum_command[1] = g_FW_checksum>>8;
 		checksum_command[2] = g_FW_checksum&0xFF;
-		i2c_master_send(g_kl25_i2c_client, checksum_command, sizeof(checksum_command));
+		i2c_master_send(client, checksum_command, sizeof(checksum_command));
 		msleep(FW_UPG_DELAY);
-		i2c_master_recv(g_kl25_i2c_client, ack, 2);
+		i2c_master_recv(client, ack, 2);
 		printk ("[%s-%d] checksum return 0x%X, 0x%X\n",__func__,__LINE__, ack[0], ack[1]);
 
-		i2c_master_send(g_kl25_i2c_client, flash_end_command, sizeof(flash_end_command));
+		i2c_master_send(client, flash_end_command, sizeof(flash_end_command));
 		msleep(500);
-		i2c_master_recv(g_kl25_i2c_client, ack, 2);
+		i2c_master_recv(client, ack, 2);
 		printk ("[%s-%d] flash end return 0x%X, 0x%X\n",__func__,__LINE__, ack[0], ack[1]);
 		if (ack[1] != 0x7E)
 		{
@@ -448,7 +479,7 @@ static ssize_t fwupg_write(struct device *dev, struct device_attribute *attr,
 			printk ("[%s-%d] checksum not match. firmware upgrade failed!\n",__func__,__LINE__);
 		}
 
-		i2c_master_send(g_kl25_i2c_client, reset_command, sizeof(reset_command));
+		i2c_master_send(client, reset_command, sizeof(reset_command));
 		printk ("[%s-%d] KL25 reset\n",__func__,__LINE__);
 		g_FW_upgrade_process = 0;
 		last_packet_length = 0;
@@ -466,13 +497,14 @@ static ssize_t VerBL_read(struct device *dev, struct device_attribute *attr,
 			char *buf)
 {
 	uint8_t buf_recv[4];
+	struct i2c_client *client = dev_get_drvdata (dev);
 
 	msleep(25);
-	i2c_master_send(g_kl25_i2c_client, wakeup_command, sizeof(wakeup_command));
+	i2c_master_send(client, wakeup_command, sizeof(wakeup_command));
 	msleep(20);
-	i2c_master_send(g_kl25_i2c_client, ident_command, sizeof(ident_command));
+	i2c_master_send(client, ident_command, sizeof(ident_command));
 	msleep(20);
-	i2c_master_recv(g_kl25_i2c_client, buf_recv, 4);
+	i2c_master_recv(client, buf_recv, 4);
 	if(3==buf_recv[0] && 0x56==buf_recv[1]) {
 		return sprintf(buf, "%d",buf_recv[2]);
 	} 
@@ -486,13 +518,14 @@ static ssize_t VerAP_read(struct device *dev, struct device_attribute *attr,
 			char *buf)
 {
 	uint8_t buf_recv[4];
+	struct i2c_client *client = dev_get_drvdata (dev);
 
 	msleep(25);
-	i2c_master_send(g_kl25_i2c_client, wakeup_command, sizeof(wakeup_command));
+	i2c_master_send(client, wakeup_command, sizeof(wakeup_command));
 	msleep(20);
-	i2c_master_send(g_kl25_i2c_client, ident_command, sizeof(ident_command));
+	i2c_master_send(client, ident_command, sizeof(ident_command));
 	msleep(20);
-	i2c_master_recv(g_kl25_i2c_client, buf_recv, 4);
+	i2c_master_recv(client, buf_recv, 4);
 	if(3==buf_recv[0] && 0x56==buf_recv[1]) {
 		return sprintf(buf, "%d",buf_recv[3]);
 	} 
@@ -505,19 +538,24 @@ static ssize_t VerAP_read(struct device *dev, struct device_attribute *attr,
 static ssize_t enable_read(struct device *dev, struct device_attribute *attr,
 			char *buf)
 {
-	return sprintf(buf, "%d\n",current_mode);
+	struct i2c_client *client = dev_get_drvdata (dev);
+	if (KL25_1_ADDR == client->addr)
+		return sprintf(buf, "%d\n",current_mode);
+	else
+		return sprintf(buf, "%d\n",current_mode_1);
 }
 
 static ssize_t enable_set(struct device *dev, struct device_attribute *attr,
 			char *buf,  size_t count)
 {
 	int value;
+	struct i2c_client *client = dev_get_drvdata (dev);
 	value = simple_strtoul(buf, NULL, 10);
 	if ( 0 != value  && 1 != value ) {
 		printk("[%s-%d] Set 1 to activate, or 0 to inactivate",__func__,__LINE__);
 		return -EINVAL;
 	}
-	kl25_ctrl(value);
+	kl25_ctrl(client, value);
 	return count;
 }
 
@@ -528,24 +566,26 @@ static ssize_t cs_read(struct device *dev, struct device_attribute *attr,
 	unsigned char flash_start_command[]={0x10};
 	unsigned char read_cs_command[]={0x14,0x03,0x00,0x00,0x7C,0x04};
 	unsigned char reflash_start_command[]={0x15,0x00,0x00};
+	struct i2c_client *client = dev_get_drvdata (dev);
+	printk ("[%sclient02X\n",__func__, __LINE__, client->addr);
 
 	uint8_t buf_recv[4];
 	unsigned char ack[20];
 
-	i2c_master_send(g_kl25_i2c_client, wakeup_command, sizeof(wakeup_command));
+	i2c_master_send(client, wakeup_command, sizeof(wakeup_command));
 	msleep(20);
-	i2c_master_send(g_kl25_i2c_client, reflash_start_command, sizeof(reflash_start_command));
+	i2c_master_send(client, reflash_start_command, sizeof(reflash_start_command));
 	msleep(50);
-	i2c_master_recv(g_kl25_i2c_client, ack, 2);
+	i2c_master_recv(client, ack, 2);
 	printk ("[%s-%d] reflash start return 0x%X, 0x%X\n",__func__,__LINE__, ack[0], ack[1]);
-	i2c_master_send(g_kl25_i2c_client, flash_start_command, sizeof(flash_start_command));
+	i2c_master_send(client, flash_start_command, sizeof(flash_start_command));
 	msleep(50);
-	i2c_master_recv(g_kl25_i2c_client, ack, 2);
+	i2c_master_recv(client, ack, 2);
 	printk ("[%s-%d] flash start return 0x%X, 0x%X\n",__func__,__LINE__, ack[0], ack[1]);
 			
-	i2c_master_send(g_kl25_i2c_client, read_cs_command, sizeof(read_cs_command));
+	i2c_master_send(client, read_cs_command, sizeof(read_cs_command));
 	msleep(FW_UPG_DELAY);
-	i2c_master_recv(g_kl25_i2c_client, buf_recv, 3);
+	i2c_master_recv(client, buf_recv, 3);
 	printk ("[%s-%d] CheckSum 0x%X, 0x%X, 0x%X\n",__func__,__LINE__, buf_recv[0], buf_recv[1], buf_recv[2]);
 
 	return 0;
@@ -570,6 +610,7 @@ static __devinit int kl25_i2c_probe(struct i2c_client *client,
 					const struct i2c_device_id *id)
 {
 	int err = 0;
+	struct input_dev *idev;
 
 	if(!i2c_check_functionality(client->adapter, I2C_FUNC_I2C))
 	{
@@ -577,17 +618,25 @@ static __devinit int kl25_i2c_probe(struct i2c_client *client,
     		return -ENXIO;
   	}
 	
-	g_kl25_i2c_client = client;
+	if (KL25_1_ADDR != client->addr)
+		g_kl25_i2c_client_2 = client;
+	else
+		g_kl25_i2c_client = client;
 	
-	err = kl25_ident();
+	err = kl25_ident(client);
 	if (err < 0) {
 		printk("Ident failed!\n");
 		return err;
 	}
 
 	idev = input_allocate_device();
+	i2c_set_clientdata (client, idev);
+	dev_set_drvdata(&idev->dev, client);
 
-	idev->name = "KL25";
+	if (KL25_1_ADDR != client->addr)
+		idev->name = "KL25_2";
+	else
+		idev->name = "KL25";
 	idev->id.bustype = BUS_I2C;
 	idev->evbit[0] = BIT_MASK(EV_KEY) ;
 	
@@ -612,9 +661,9 @@ static __devinit int kl25_i2c_probe(struct i2c_client *client,
 		return -ENODEV;
 	}
 
-	err = request_irq(g_kl25_i2c_client->irq, kl25_interrupt, IRQF_TRIGGER_FALLING, KL25_NAME, KL25_NAME);
+	err = request_irq(client->irq, kl25_interrupt, IRQF_TRIGGER_RISING, KL25_NAME, client);
 	if (err < 0) {
-		printk(KERN_ERR "%s(%s): Can't allocate irq %d\n", __FILE__, __func__, g_kl25_i2c_client->irq);
+		printk(KERN_ERR "%s(%s): Can't allocate irq %d\n", __FILE__, __func__, client->irq);
 		cancel_delayed_work_sync (&kl25_delay_work);
 		return err;
 	}
@@ -626,9 +675,9 @@ static __devexit int kl25_i2c_remove(struct i2c_client *client)
 	return 0;
 }
 
-static int kl25_suspend(struct platform_device *pdev, pm_message_t state)
+static int kl25_suspend(struct i2c_client *client, pm_message_t state)
 {
-//	printk ("[%s-%d] %s() %d\n",__FILE__,__LINE__,__func__,gSleep_Mode_Suspend);
+//	printk ("[%s-%d] %s(%02X) %d\n",__FILE__,__LINE__,__func__, client->addr,gSleep_Mode_Suspend);
 	
 	/* return immediatly if the driver is still handling touch data */
 	if (kl25_triggered) {
@@ -637,39 +686,56 @@ static int kl25_suspend(struct platform_device *pdev, pm_message_t state)
 	}
 
 	/* KL25 wants to send data, trigger a read */
-	if ( kl25_int_level() ) 
+	if ( kl25_int_level(client) )
 	{
-		printk ("[%s-%d] KL25 event not processed.\n",__func__,__LINE__);
+		printk ("[%s-%d] KL25 (%02X) event not processed.\n",__func__,__LINE__, client->addr);
+		if (KL25_1_ADDR == client->addr)
+			kl25_triggered |= 1;
+		else
+			kl25_triggered |= 2;
 		schedule_delayed_work(&kl25_delay_work, 0);
 		return -EBUSY;
 	}
 	
 	if (gSleep_Mode_Suspend) {
-		free_irq(g_kl25_i2c_client->irq, KL25_NAME);
+//		printk("kl25_suspend addr (%02X),free_irq %d\n",client->addr, client->irq);
+		free_irq(client->irq, client);
 	}
 	else {
-//		printk("kl25_suspend,enable irq wakeup source %d\n",g_kl25_i2c_client->irq);
-		enable_irq_wake(g_kl25_i2c_client->irq);
+//		printk("kl25_suspend addr (%02X),enable irq wakeup source %d\n",client->addr, client->irq);
+		enable_irq_wake(client->irq);
 	}
 	return 0;
 }
 
-static int kl25_resume(struct platform_device *pdev)
+static int kl25_resume(struct i2c_client *client)
 {
+//	printk ("[%s-%d] %s(%02X) %d\n",__FILE__,__LINE__,__func__, client->addr,gSleep_Mode_Suspend);
 	if (gSleep_Mode_Suspend) {
-		request_irq(g_kl25_i2c_client->irq, kl25_interrupt, IRQF_TRIGGER_FALLING, KL25_NAME, KL25_NAME);
-		kl25_ctrl(current_mode);
+		request_irq(client->irq, kl25_interrupt, IRQF_TRIGGER_RISING, KL25_NAME, client);
+		if (KL25_1_ADDR == client->addr)
+			kl25_ctrl(client, current_mode);
+		else
+			kl25_ctrl(client, current_mode_1);
 	}
 	else {
-		schedule_delayed_work(&kl25_delay_work, 0);
+		if(gWakeUpbyKL25) {
+			if (KL25_1_ADDR == client->addr)
+				kl25_triggered |= 1;
+			else
+				kl25_triggered |= 2;
+			schedule_delayed_work(&kl25_delay_work, 0);
+			gWakeUpbyKL25 = 0;
+		}
 //		printk("kl25_resume,disable irq wakeup source %d\n",g_kl25_i2c_client->irq);
-		disable_irq_wake(g_kl25_i2c_client->irq);
+		disable_irq_wake(client->irq);
 	}
 	return 0;
 }
 
 static const struct i2c_device_id kl25_id[] = {
 	{"kl25", 0},
+	{"kl25_2", 0},
 	{},
 };
 

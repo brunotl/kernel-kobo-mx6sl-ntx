@@ -34,7 +34,7 @@
 #include <linux/i2c.h>
 #include <linux/mfd/core.h>
 #include <linux/mfd/ricoh619.h>
-
+#include <linux/rtc/rtc-ricoh619.h>
 
 struct sleep_control_data {
 	u8 reg_add;
@@ -448,6 +448,12 @@ int ricoh619_power_off(void)
   	/* Disable all Interrupt */
         __ricoh61x_write(ricoh61x_i2c_client, RICOH61x_INTC_INTEN, 0);
 
+  	/* Disable rtc Interrupt */
+	ret = __ricoh61x_read(ricoh61x_i2c_client,
+				      rtc_ctrl1, &reg_val);
+	reg_val &= 0xBF;	// clear DALE flag
+    __ricoh61x_write(ricoh61x_i2c_client, rtc_ctrl1, reg_val);
+
 	/* Not repeat power ON after power off(Power Off/N_OE) */
 	__ricoh61x_write(ricoh61x_i2c_client, RICOH61x_PWR_REP_CNT, 0x0);
 
@@ -828,8 +834,8 @@ static void __devinit ricoh61x_noe_init(struct ricoh61x *ricoh)
 {
 	struct i2c_client *client = ricoh->client;
 
-	/* N_OE timer setting to 128mS */
-	__ricoh61x_write(client, RICOH61x_PWR_NOE_TIMSET, 0x0);
+	__ricoh61x_write(client, RICOH61x_PWR_NOE_TIMSET, 0x8); // disable N_OE
+
 	/* power on/off timer setting to on 1s, off 8S */
 	__ricoh61x_write(client, RICOH61x_PWR_ON_TIMSET, 0x5B);
 #if 0 	// do not set repeat power on bit to enable force power off by long press power key function.
@@ -906,12 +912,25 @@ static int  __devexit ricoh61x_i2c_remove(struct i2c_client *client)
 	return 0;
 }
 
+extern volatile int giRicoh61x_rtc_user_enabled ;
 #ifdef CONFIG_PM
 static int ricoh61x_i2c_suspend(struct i2c_client *client, pm_message_t state)
 {
 	struct ricoh61x *ricoh61x = i2c_get_clientdata(client);
+	uint8_t reg_val;
+	int ret;
 
 	ricoh61x->iIsSuspending = 1;
+
+  /* Disable rtc Interrupt */
+	ret = __ricoh61x_read(ricoh61x_i2c_client,
+				      rtc_ctrl1, &reg_val);
+
+	if(giRicoh61x_rtc_user_enabled) {
+		reg_val |= 0x40;	// set DALE flag
+    	__ricoh61x_write(ricoh61x_i2c_client, rtc_ctrl1, reg_val);
+	}
+
 
 #if 0
 	printk(KERN_INFO "PMU: %s:\n", __func__);
@@ -938,12 +957,18 @@ static int ricoh61x_i2c_resume(struct i2c_client *client)
 		printk(KERN_INFO "PMU: %s: PWR_KEY Wakeup\n", __func__);
 		pwrkey_wakeup = 1;
 		/* Clear PWR_KEY IRQ */
-		__ricoh61x_write(client, RICOH61x_INT_IR_SYS, 0x0);
+		__ricoh61x_write(client, RICOH61x_INT_IR_SYS, reg_val & 0xFE);
 	}
 //	enable_irq(client->irq);
 
 	/* Enable all Interrupt */
 	__ricoh61x_write(client, RICOH61x_INTC_INTEN, 0xff);
+
+  /* Disable rtc Interrupt */
+	ret = __ricoh61x_read(ricoh61x_i2c_client,
+				      rtc_ctrl1, &reg_val);
+	reg_val &= 0xBF;	// clear DALE flag
+    __ricoh61x_write(ricoh61x_i2c_client, rtc_ctrl1, reg_val);
 
 	ricoh61x->iIsSuspending = 0;
 

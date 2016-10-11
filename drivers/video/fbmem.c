@@ -1120,6 +1120,12 @@ static long do_fb_ioctl(struct fb_info *info, unsigned int cmd,
 					pvar->xres = 1200;
 					pvar->yres = 1600;
 				}
+				else if (8==gptHWCFG->m_val.bDisplayResolution) {
+					pvar->xres_virtual = 1404;
+					pvar->yres_virtual = 1872;
+					pvar->xres = 1404;
+					pvar->yres = 1872;
+				}
 				else if (2==gptHWCFG->m_val.bDisplayResolution) {
 					pvar->xres_virtual = 768;
 					pvar->yres_virtual = 1024;

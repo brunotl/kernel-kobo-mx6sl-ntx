@@ -148,7 +148,7 @@ static int __ricoh61x_set_s_voltage(struct device *parent,
 	if (vsel > ri->nsteps)
 		return -EDOM;
 
-	printk ("[%s-%d] at %duv suspend\n",__func__,__LINE__,min_uV);
+	printk ("%s at %duv suspend\n", ri->desc.name, min_uV);
 	ret = ricoh61x_update(parent, ri->sleep_reg, vsel, ri->vout_mask);
 	if (ret < 0)
 		dev_err(ri->dev, "Error in writing the sleep register\n");
@@ -410,7 +410,12 @@ static int ricoh61x_regulator_preinit(struct device *parent,
 	}
 
 	if (ricoh61x_pdata->sleep_uV > 0) {
-		ret = __ricoh61x_set_s_voltage(parent, ri,
+		int vReg = ri->min_uV + (ri->vout_reg_cache & ri->vout_mask) * ri->step_uV;
+
+		if (3300*1000 == vReg)
+			ret = __ricoh61x_set_s_voltage(parent, ri, vReg,vReg);
+		else
+			ret = __ricoh61x_set_s_voltage(parent, ri,
 				ricoh61x_pdata->sleep_uV,
 				ricoh61x_pdata->sleep_uV);
 		if (ret < 0) {
@@ -485,6 +490,13 @@ static int __devinit ricoh61x_regulator_probe(struct platform_device *pdev)
 		return PTR_ERR(rdev);
 	}
 
+	if (3 == gptHWCFG->m_val.bTouch2Ctrl) { //Digitizer
+		if (RICOH619_ID_LDO1 == id) {
+//			printk("[%s-%d] ID=%d: eco_slp_reg=%2X, setting to 0\n", __func__, __LINE__, id, ri-> eco_slp_reg);
+			ri->eco_slp_reg=0;
+		}
+	}
+
 	platform_set_drvdata(pdev, rdev);
 	
 	if (ri->eco_slp_reg) 
@@ -508,6 +520,7 @@ static int ricoh61x_regulator_suspend(struct device *dev)
 {
 	struct regulator_dev *rdev = platform_get_drvdata(to_platform_device(dev));
 	struct ricoh61x_regulator *ri = rdev_get_drvdata(rdev);
+	struct ricoh619_regulator_platform_data *ricoh61x_pdata = ((struct device*)(ri->dev))->platform_data;
 	uint8_t temp;
 	int offset = 0x16 + (ri->id - RICOH619_ID_DC1);
 		
@@ -523,13 +536,41 @@ static int ricoh61x_regulator_suspend(struct device *dev)
 		case RICOH619_ID_LDO7:	// VDD_PWM
 			ricoh61x_write(to_ricoh61x_dev(rdev), offset, temp);
 			break;
-		case RICOH619_ID_LDO1:	// IR_3V3
-			if(3==gptHWCFG->m_val.bTouchType || 4==gptHWCFG->m_val.bTouchType) {
-				if(0x03!=gptHWCFG->m_val.bUIConfig) {
-					ricoh61x_write(to_ricoh61x_dev(rdev), offset, temp);
-				}
+		case RICOH619_ID_LDO4:
+		case RICOH619_ID_LDO9:
+		case RICOH619_ID_LDO10:
+			if (50==gptHWCFG->m_val.bPCB || 47==gptHWCFG->m_val.bPCB || 54==gptHWCFG->m_val.bPCB || 58==gptHWCFG->m_val.bPCB || 61==gptHWCFG->m_val.bPCB)
+				ricoh61x_write(to_ricoh61x_dev(rdev), offset, temp);
+			break;
+		case RICOH619_ID_LDO6:	// DDR_0V6
+			if( 4==gptHWCFG->m_val.bRamType || 10==gptHWCFG->m_val.bRamType ) {
+				// DDR3 || LPDDR3 .
+				ricoh61x_write(to_ricoh61x_dev(rdev), offset, temp);
 			}
 			break;
+		case RICOH619_ID_LDO1:	// TP_3V3
+			if( 3==gptHWCFG->m_val.bTouchType ||
+			   (4==gptHWCFG->m_val.bTouchType && 0x03!=gptHWCFG->m_val.bUIConfig) )
+			{
+				ricoh61x_write(to_ricoh61x_dev(rdev), offset, temp);
+			}
+			break;
+		}
+
+		if ((0 < ricoh61x_pdata->sleep_uV) && (RICOH619_ID_LDO8 != ri->id)) {
+			int vReg = ri->min_uV + (ri->vout_reg_cache & ri->vout_mask) * ri->step_uV;
+			if (3300*1000 == vReg) {
+				int ret;
+				ret = __ricoh61x_set_s_voltage(((struct device*)(ri->dev))->parent, ri,
+						ricoh61x_pdata->sleep_uV,
+						ricoh61x_pdata->sleep_uV);
+				if (ret < 0) {
+					dev_err(ri->dev, "Not able to initialize sleep voltage %d "
+						"for rail %d err %d\n", ricoh61x_pdata->sleep_uV,
+						ri->desc.id, ret);
+					return ret;
+				}
+			}
 		}
 	}
 	else {
@@ -540,7 +581,7 @@ static int ricoh61x_regulator_suspend(struct device *dev)
 		default:
 			if (0x0F != (regulator_slot[ri->id] & 0x0F)) {
 				temp = regulator_slot[ri->id] | 0x0F;
-  			ricoh61x_write(to_ricoh61x_dev(rdev), offset, temp);
+				ricoh61x_write(to_ricoh61x_dev(rdev), offset, temp);
 			}
 			break;
 		}
@@ -556,6 +597,7 @@ static int ricoh61x_regulator_resume(struct device *dev)
 //	printk(KERN_INFO "PMU: %s %s\n", __func__, ri->desc.name);
 	struct regulator_dev *rdev = platform_get_drvdata(to_platform_device(dev));
 	struct ricoh61x_regulator *ri = rdev_get_drvdata(rdev);
+	struct ricoh619_regulator_platform_data *ricoh61x_pdata = ((struct device*)(ri->dev))->platform_data;
 	int offset = 0x16 + (ri->id - RICOH619_ID_DC1);
 	
 	if (gSleep_Mode_Suspend) {
@@ -567,13 +609,39 @@ static int ricoh61x_regulator_resume(struct device *dev)
 		case RICOH619_ID_LDO8:	// VDD_EP_1V8
 			ricoh61x_write(to_ricoh61x_dev(rdev), offset, regulator_slot[ri->id]);
 			break;
-		case RICOH619_ID_LDO1:	// IR_3V3
-			if(3==gptHWCFG->m_val.bTouchType || 4==gptHWCFG->m_val.bTouchType) {
-				if(0x03!=gptHWCFG->m_val.bUIConfig) {
-					ricoh61x_write(to_ricoh61x_dev(rdev), offset, regulator_slot[ri->id]);
-				}
+		case RICOH619_ID_LDO4:
+		case RICOH619_ID_LDO9:
+		case RICOH619_ID_LDO10:
+			if (50==gptHWCFG->m_val.bPCB || 47==gptHWCFG->m_val.bPCB || 54==gptHWCFG->m_val.bPCB || 58==gptHWCFG->m_val.bPCB || 61==gptHWCFG->m_val.bPCB)
+				ricoh61x_write(to_ricoh61x_dev(rdev), offset, regulator_slot[ri->id]);
+			break;
+		case RICOH619_ID_LDO6:	// DDR_0V6
+			if( 4==gptHWCFG->m_val.bRamType || 10==gptHWCFG->m_val.bRamType ) {
+				// DDR3 || LPDDR3 .
+				ricoh61x_write(to_ricoh61x_dev(rdev), offset, regulator_slot[ri->id]);
 			}
 			break;
+		case RICOH619_ID_LDO1:	// TP_3V3
+			if( 3==gptHWCFG->m_val.bTouchType ||
+			   (4==gptHWCFG->m_val.bTouchType && 0x03!=gptHWCFG->m_val.bUIConfig) )
+			{
+				ricoh61x_write(to_ricoh61x_dev(rdev), offset, regulator_slot[ri->id]);
+			}
+			break;
+		}
+		if ((0 < ricoh61x_pdata->sleep_uV) && (RICOH619_ID_LDO8 != ri->id)) {
+			int vReg = ri->min_uV + (ri->vout_reg_cache & ri->vout_mask) * ri->step_uV;
+			if (3300*1000 == vReg) {
+				int ret;
+				ret = __ricoh61x_set_s_voltage(((struct device*)(ri->dev))->parent, ri,
+						vReg, vReg);
+				if (ret < 0) {
+					dev_err(ri->dev, "Not able to initialize sleep voltage %d "
+						"for rail %d err %d\n", ricoh61x_pdata->sleep_uV,
+						ri->desc.id, ret);
+					return ret;
+				}
+			}
 		}
 	}
 	else {
