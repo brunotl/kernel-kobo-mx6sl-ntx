@@ -493,7 +493,12 @@ static int Battery_Table(void)
 		BatteryTableFlageDef=1;
 		break;
 	case 10: //1200mAh
-		BatteryTableFlageDef=2;
+		if(NTXHWCFG_TST_FLAG(gptHWCFG->m_val.bEPD_Flags,1)) {
+			BatteryTableFlageDef=4;
+		}
+		else {
+			BatteryTableFlageDef=2;
+		}
 		break;
 	case 12: //SP284657-1000mA
 		BatteryTableFlageDef=3;
@@ -502,7 +507,6 @@ static int Battery_Table(void)
 		BatteryTableFlageDef=0;
 		break;
 	}
-
 	return BatteryTableFlageDef;
 }
 
@@ -1541,12 +1545,29 @@ static int getCapFromOriTable_U10per(struct ricoh61x_battery_info *info, int vol
 							3776061,
 							3778194,
 							3780219};
+	int ocv_table_for_1200mAh_coff36[11] = {	3602154,
+ 							3640621,
+ 							3670068,
+ 							3680034,
+ 							3683734,
+ 							3685768,
+ 							3689288,
+ 							3692088,
+ 							3695388,
+ 							3698221,
+ 							3701000};
 
 
 	int *ocv_table;
 
 	if(10 == gptHWCFG->m_val.bBattery) {// 1200mAh battery
-		ocv_table = ocv_table_for_1200mAh;
+		if(NTXHWCFG_TST_FLAG(gptHWCFG->m_val.bEPD_Flags,1)) {
+			// cut off @ 3.6V for LPTFT .
+			ocv_table = ocv_table_for_1200mAh_coff36;
+		}
+		else {
+			ocv_table = ocv_table_for_1200mAh;
+		}
 	}
 	else {
 		ocv_table = ocv_table_regular;
@@ -1740,12 +1761,23 @@ static int calc_soc_by_voltageMethod(struct ricoh61x_battery_info *info)
 	ret = measure_vbatt_FG(info, &info->soca->Vbat_ave);
 
 	if(10 == gptHWCFG->m_val.bBattery) {// 1200mAh battery
-		if(info->soca->Vbat_ave > 4100000) {
-			soc = 10000;
-		} else if(info->soca->Vbat_ave < 3750000) {
-			soc = 0;
-		} else {
-			soc = 10000 - ((4100000 - info->soca->Vbat_ave) / 35);
+		if (NTXHWCFG_TST_FLAG(gptHWCFG->m_val.bEPD_Flags,1)) {	// 1200mA for lp-tft
+			if(info->soca->Vbat_ave > 4100000) {
+				soc = 10000;
+			} else if(info->soca->Vbat_ave < 3660000) {
+				soc = 0;
+			} else {
+				soc = 10000 - ((4100000 - info->soca->Vbat_ave) / 44);
+			}
+		}
+		else {
+			if(info->soca->Vbat_ave > 4100000) {
+				soc = 10000;
+			} else if(info->soca->Vbat_ave < 3750000) {
+				soc = 0;
+			} else {
+				soc = 10000 - ((4100000 - info->soca->Vbat_ave) / 35);
+			}
 		}
 	}
 	else {
@@ -4216,7 +4248,7 @@ static int ricoh61x_init_charger(struct ricoh61x_battery_info *info)
 
 	/* Start auto-mode & average 4-time conversion mode for ADC */
 	ricoh61x_write(info->dev->parent, RICOH61x_ADC_CNT3, 0x28);
-
+	//ricoh61x_write(info->dev->parent, 0xb1, 0x4); // BATDET set to 3.1V .
 #endif
 
 free_device:
@@ -5344,8 +5376,12 @@ int ricoh619_battery_2_msp430_adc(void)
 	// report battery status by percentage
 	struct ricoh61x_battery_info *info = platform_get_drvdata(gBattery_dev);
 	int percentage = (info->soca->displayed_soc+50)/100;
-	if (0 >= percentage)
-		return 0x8000;
+	if (0 >= percentage) {
+		if (info->first_pwon && (RICOH61x_SOCA_START == info->soca->status))	// assume battery full if 1st power on.
+			percentage = 100;
+		else
+			return 0x8000;
+	}
 	result = 885 + (1023-885)*percentage/100;
 #endif
 	return result;

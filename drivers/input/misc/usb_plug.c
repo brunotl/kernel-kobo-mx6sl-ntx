@@ -34,7 +34,7 @@ extern void set_pmic_dc_charger_state(int dccharger);
 static void usb_plug_handler(void *dummy)
 {
 	int plugged;
-	static int last_status;
+	static int last_status=-1;
 
 	GALLEN_DBGLOCAL_BEGIN();
 
@@ -49,8 +49,12 @@ static void usb_plug_handler(void *dummy)
 		return ;
 	}
 
-
 	plugged = mxc_usbplug->get_status();
+
+	if(plugged==last_status) {
+		return ;
+	}
+
 	if (plugged) {
 		int charger;
 		int ret;
@@ -105,8 +109,7 @@ static void usb_plug_handler(void *dummy)
 			ret = kobject_rename(&mxc_usbplug->ddev->kobj, "usb_host");
 		}
 		pr_info("usb plugged %d-%d\n", plugged, charger);
-		if (last_status != plugged)
-			kobject_uevent(&mxc_usbplug->ddev->kobj, KOBJ_ADD);
+		kobject_uevent(&mxc_usbplug->ddev->kobj, KOBJ_ADD);
 	} else {
 		GALLEN_DBGLOCAL_RUNLOG(3);
 		kobject_uevent(&mxc_usbplug->ddev->kobj, KOBJ_REMOVE);

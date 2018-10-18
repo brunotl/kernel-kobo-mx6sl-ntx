@@ -8,7 +8,7 @@ extern "C" {
 
 
 #define NTX_HWCFG_MAGIC				"HW CONFIG "
-#define NTX_HWCFG_VER					"v2.7"
+#define NTX_HWCFG_VER					"v2.8"
 
 #define SYSHWCONFIG_SEEKSIZE	(1024*512)
 
@@ -83,6 +83,8 @@ typedef struct tagNTXHWCFG_VAL {
 	unsigned char bTPFWIDByte6;// TP firmware ID byte6 .
 	unsigned char bTPFWIDByte7;// TP firmware ID byte7 .
 	unsigned char bGPU; //GPU .
+	unsigned char bPCB_Flags2;// PCB Flags2 .
+	unsigned char bEPD_Flags;// EPD Flags .
 } NTXHWCFG_VAL ;
 
 typedef struct tagNTX_HWCONFG{
@@ -239,6 +241,8 @@ extern const char * gszGPUA[];// GPU .
 #define HWCFG_FLDIDX_TPFWIDByte6					60 // v2.6
 #define HWCFG_FLDIDX_TPFWIDByte7					61 // v2.6
 #define HWCFG_FLDIDX_GPU									62 // v2.7
+#define HWCFG_FLDIDX_PCB_Flags2						63 // v2.8
+#define HWCFG_FLDIDX_EPD_Flags						64 // v2.8
 
 
 

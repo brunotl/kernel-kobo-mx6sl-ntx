@@ -3604,6 +3604,13 @@ static void epdc_submit_work_func(struct work_struct *work)
 		mutex_unlock(&fb_data->queue_mutex);
 		mutex_lock(&fb_data->pxp_mutex);
 
+		upd_data_list->phys_addr = 
+			fb_data->phys_addr_updbuf[fb_data->upd_buffer_num] + 
+			fb_data->epdc_fb_var.yres * (ALIGN(fb_data->epdc_fb_var.xres,8)-fb_data->epdc_fb_var.xres);
+		upd_data_list->virt_addr = 
+			fb_data->virt_addr_updbuf[fb_data->upd_buffer_num] + 
+			fb_data->epdc_fb_var.yres * (ALIGN(fb_data->epdc_fb_var.xres,8)-fb_data->epdc_fb_var.xres);
+
 		if (do_aa_processing_v2_2_0((uint8_t *)(upd_data_list->virt_addr
 				+ upd_data_list->update_desc->epdc_offs),
 				&adj_update_region,
@@ -3612,6 +3619,11 @@ static void epdc_submit_work_func(struct work_struct *work)
 				fb_data->native_width,
 				fb_data->native_height))
 			dev_err(fb_data->dev," AAD algorithm is not available in this EPDC driver!\n");
+
+		upd_data_list->phys_addr = 
+			fb_data->phys_addr_updbuf[fb_data->upd_buffer_num];
+		upd_data_list->virt_addr = 
+			fb_data->virt_addr_updbuf[fb_data->upd_buffer_num];
 
 		mutex_unlock(&fb_data->pxp_mutex);
 		mutex_lock(&fb_data->queue_mutex);
@@ -3637,6 +3649,14 @@ static void epdc_submit_work_func(struct work_struct *work)
 		mutex_unlock(&fb_data->queue_mutex);
 		mutex_lock(&fb_data->pxp_mutex);
 
+
+		upd_data_list->phys_addr = 
+			fb_data->phys_addr_updbuf[fb_data->upd_buffer_num] + 
+			fb_data->epdc_fb_var.yres * (ALIGN(fb_data->epdc_fb_var.xres,8)-fb_data->epdc_fb_var.xres);
+		upd_data_list->virt_addr = 
+			fb_data->virt_addr_updbuf[fb_data->upd_buffer_num] + 
+			fb_data->epdc_fb_var.yres * (ALIGN(fb_data->epdc_fb_var.xres,8)-fb_data->epdc_fb_var.xres);
+
 		if (do_aad_processing_v2_1_0((uint8_t *)(upd_data_list->virt_addr
 				+ upd_data_list->update_desc->epdc_offs),
 				&adj_update_region,
@@ -3645,6 +3665,11 @@ static void epdc_submit_work_func(struct work_struct *work)
 				fb_data->native_width,
 				fb_data->native_height))
 			dev_err(fb_data->dev," AA algorithm is not available in this EPDC driver!\n");
+
+		upd_data_list->phys_addr = 
+			fb_data->phys_addr_updbuf[fb_data->upd_buffer_num];
+		upd_data_list->virt_addr = 
+			fb_data->virt_addr_updbuf[fb_data->upd_buffer_num];
 
 		mutex_unlock(&fb_data->pxp_mutex);
 		mutex_lock(&fb_data->queue_mutex);

@@ -3646,8 +3646,20 @@ static void ntx_gpio_init(void)
 			gMX6SL_ACT_LED = IMX_GPIO_NR(5, 10);
 			gMX6SL_ON_LED = IMX_GPIO_NR(5, 7);
 			gMX6SL_CHG_LED = IMX_GPIO_NR(5, 9);
-			ricoh_battery_data.alarm_vol_mv = 3670;		// set battery critical to 3.76mV
-			ricoh_battery_data.type[0].fg_poff_vbat = 3730;		// set battery 0% to 3.73V
+			if(NTXHWCFG_TST_FLAG(gptHWCFG->m_val.bEPD_Flags,1)) {
+				// LPTFT .
+				ricoh_battery_data.alarm_vol_mv = 3550;		// set battery critical to 3.55V
+				ricoh_battery_data.type[0].fg_poff_vbat = 3600;		// set battery 0% to 3.6V
+			}
+			else {
+				ricoh_battery_data.alarm_vol_mv = 3670;		// set battery critical to 3.76V
+				ricoh_battery_data.type[0].fg_poff_vbat = 3730;		// set battery 0% to 3.73V
+			}
+
+#if 0
+			printk("alarm voltage mV=%d\n",(int)ricoh_battery_data.alarm_vol_mv);
+			printk("cutoff voltage mV=%d\n",(int)ricoh_battery_data.type[0].fg_poff_vbat);
+#endif
 		}
 		else {
 			gMX6SL_ACT_LED = IMX_GPIO_NR(5, 7);	
